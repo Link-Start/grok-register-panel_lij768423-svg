@@ -13,8 +13,17 @@ import time
 from pathlib import Path
 from typing import Callable, Mapping, Sequence
 
+import sys
+
 from runtime_platform import popen_group_kwargs
 from secure_files import atomic_write_json, exclusive_file_lock
+
+# Windows consoles often default to GBK; force utf-8 replace to avoid crash on emoji/CJK logs
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 
 PROGRESS_ENV = "GROK_BATCH_PROGRESS_FILE"
@@ -199,7 +208,13 @@ def run_supervisor(
                         if lines and not lines[-1].endswith(("\n", "\r")):
                             pending_output = lines.pop()
                         for line in lines:
-                            print(line, end="", flush=True)
+                            try:
+                                print(line, end="", flush=True)
+                            except UnicodeEncodeError:
+                                sys.stdout.buffer.write(
+                                    line.encode("utf-8", errors="replace")
+                                )
+                                sys.stdout.buffer.flush()
                             if is_driver_crash_line(line):
                                 restart_reason = "playwright driver crashed"
                                 break

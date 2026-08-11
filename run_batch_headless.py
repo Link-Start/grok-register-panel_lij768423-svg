@@ -1,11 +1,18 @@
 #!/usr/bin/env python3
 from pathlib import Path
 import os
+import sys
+
+# Windows consoles often default to GBK; force utf-8 replace to avoid crash on emoji/CJK logs
+try:
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+except Exception:
+    pass
 
 os.chdir(str(Path(__file__).resolve().parent))
 
 import json
-import sys
 import time
 import types
 

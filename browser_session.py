@@ -13,6 +13,7 @@ import tempfile
 import threading
 import time
 import uuid
+from pathlib import Path
 from typing import Callable, Optional, Tuple
 from urllib.parse import urlparse
 
@@ -323,7 +324,12 @@ def _is_managed_profile_dir(path: str) -> bool:
         return False
     norm = os.path.normpath(path).replace("\\", "/").lower()
     marker = _PROFILE_ROOT_MARKER.lower()
-    return f"/{marker}/" in f"/{norm}/" or norm.rstrip("/").endswith(f"/{marker}")
+    if f"/{marker}/" in f"/{norm}/" or norm.rstrip("/").endswith(f"/{marker}"):
+        return True
+    # Windows project-local profiles live under .browser-profiles/
+    return "/.browser-profiles/" in f"/{norm}/" or norm.rstrip("/").endswith(
+        "/.browser-profiles"
+    )
 
 
 def _rmtree_with_retry(path: str, max_retries: int = 3, delay: float = 0.5) -> bool:
@@ -378,43 +384,50 @@ def _cleanup_profile_dir(profile_dir=None) -> None:
 def cleanup_stale_profiles(log_callback=None) -> int:
     """启动时清理上次崩溃 / 强杀残留的临时 profile 目录。
 
-    扫描 TEMP/grok-register-camoufox/ 下的子目录，
-    删除所有未被当前进程占用的旧目录。
+    扫描 TEMP/grok-register-camoufox/（以及 Windows 下项目内 .browser-profiles/）
+    下的子目录，删除所有未被当前进程占用的旧目录。
     返回清理的目录数量。
     """
-    root = os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER)
-    if not os.path.isdir(root):
-        return 0
-    ensure_private_dir(root)
+    roots: list[str] = []
+    if os.name == "nt":
+        roots.append(str(Path(__file__).resolve().parent / ".browser-profiles"))
+    roots.append(os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER))
 
     current_pid = os.getpid()
     cleaned = 0
-    try:
-        for entry in os.listdir(root):
-            entry_path = os.path.join(root, entry)
-            if not os.path.isdir(entry_path):
-                continue
-            # Directory format: {pid}-{thread_id}-{uuid8}. Unknown names are
-            # never removed, and profiles owned by any live process are kept.
-            match = __import__("re").fullmatch(r"(\d+)-\d+-[0-9a-fA-F]{8}", entry)
-            if not match:
-                continue
-            owner_pid = int(match.group(1))
-            if owner_pid == current_pid or _pid_alive(owner_pid):
-                continue
-            if _rmtree_with_retry(entry_path):
-                cleaned += 1
-    except Exception:
-        pass
-
-    # 如果 root 目录已空，顺便删掉
-    if cleaned > 0:
+    for root in roots:
+        if not os.path.isdir(root):
+            continue
+        if os.name != "nt":
+            ensure_private_dir(root)
         try:
-            remaining = os.listdir(root)
-            if not remaining:
-                shutil.rmtree(root, ignore_errors=True)
+            for entry in os.listdir(root):
+                entry_path = os.path.join(root, entry)
+                if not os.path.isdir(entry_path):
+                    continue
+                # Directory format: {pid}-{thread_id}-{uuid8}. Unknown names are
+                # never removed, and profiles owned by any live process are kept.
+                match = __import__("re").fullmatch(
+                    r"(\d+)-\d+-[0-9a-fA-F]{8}", entry
+                )
+                if not match:
+                    continue
+                owner_pid = int(match.group(1))
+                if owner_pid == current_pid or _pid_alive(owner_pid):
+                    continue
+                if _rmtree_with_retry(entry_path):
+                    cleaned += 1
         except Exception:
             pass
+
+        # 如果 root 目录已空，顺便删掉（仅 TEMP 下的 marker 根）
+        if cleaned > 0 and root.endswith(_PROFILE_ROOT_MARKER):
+            try:
+                remaining = os.listdir(root)
+                if not remaining:
+                    shutil.rmtree(root, ignore_errors=True)
+            except Exception:
+                pass
 
     if cleaned > 0 and log_callback:
         log_callback(f"[*] 启动清理: 已删除 {cleaned} 个残留浏览器资料目录")
@@ -422,56 +435,123 @@ def cleanup_stale_profiles(log_callback=None) -> int:
 
 
 
-def _resolve_proxy_exit_ip(proxy_str: str, timeout: float = 8.0, log_callback=None) -> str:
+def _resolve_proxy_exit_ip(proxy_str: str, timeout: float = 20.0, log_callback=None) -> str:
     """经代理探测出口公网 IP（比 Camoufox 内置 public_ip 更耐住宅延迟）。
 
     Camoufox geoip=True 时会自己请求 ipecho/ipify，timeout 仅 5s，
     住宅 sticky 稍慢就 Failed to get IP → 浏览器启动失败。
     这里加长超时、多源探测，成功后把 IP 字符串传给 geoip=，跳过库内探测。
+    Windows 优先 curl_cffi（requests+HTTP 代理在 Win 上更易失败）。
     """
     import re as _re
     import warnings
-    import requests
-    from urllib3.exceptions import InsecureRequestWarning
 
     proxy_str = (proxy_str or "").strip()
     if not proxy_str:
         raise RuntimeError("代理为空，无法探测出口 IP")
+
+    # optional cache from log/good-proxies-meta.txt written by external probe
+    try:
+        meta = Path(__file__).resolve().parent / "log" / "good-proxies-meta.txt"
+        if meta.exists():
+            for line in meta.read_text(encoding="utf-8", errors="ignore").splitlines():
+                parts = line.strip().split()
+                if len(parts) >= 2 and parts[0] == proxy_str:
+                    ip = parts[1].strip()
+                    if _re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip) or ":" in ip:
+                        if log_callback:
+                            log_callback(f"[*] 代理出口 IP: {ip} (cache)")
+                        return ip
+    except Exception:
+        pass
+
     urls = (
         "https://api.ipify.org",
-        "https://checkip.amazonaws.com",
-        "https://ipinfo.io/ip",
         "https://icanhazip.com",
         "https://ifconfig.me/ip",
+        "https://checkip.amazonaws.com",
+        "https://ipinfo.io/ip",
         "https://ipecho.net/plain",
     )
-    proxies = {"http": proxy_str, "https": proxy_str}
     last_exc = None
     hard_fails = 0
-    # 死代理别把 6 个源全扫完（最坏 ~72s）；连续 2 次连接/SSL 失败即放弃
-    per_try = min(float(timeout), 8.0)
-    for url in urls:
-        try:
-            with warnings.catch_warnings():
-                warnings.filterwarnings("ignore", category=InsecureRequestWarning)
-                resp = requests.get(url, proxies=proxies, timeout=per_try, verify=False)
-            resp.raise_for_status()
-            ip = (resp.text or "").strip().split()[0]
-            if _re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip) or ":" in ip:
+    per_try = max(float(timeout), 15.0)
+
+    # 1) curl_cffi first (more reliable through HTTP proxies on Windows)
+    try:
+        from curl_cffi import requests as creq
+
+        for url in urls:
+            try:
+                resp = creq.get(
+                    url,
+                    proxy=proxy_str,
+                    timeout=per_try,
+                    impersonate="chrome131",
+                    verify=False,
+                )
+                resp.raise_for_status()
+                ip = (resp.text or "").strip().split()[0]
+                if _re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip) or ":" in ip:
+                    if log_callback:
+                        log_callback(
+                            f"[*] 代理出口 IP: {ip} (curl_cffi/{url.split('/')[2]})"
+                        )
+                    return ip
+                last_exc = RuntimeError(f"非 IP 响应: {ip[:60]!r}")
+            except Exception as exc:
+                last_exc = exc
+                hard_fails += 1
                 if log_callback:
-                    log_callback(f"[*] 代理出口 IP: {ip} (via {url.split('/')[2]})")
-                return ip
-            last_exc = RuntimeError(f"非 IP 响应: {ip[:60]!r}")
-            hard_fails = 0
-        except Exception as exc:
-            last_exc = exc
-            hard_fails += 1
-            if log_callback:
-                host = url.split("/")[2]
-                log_callback(f"[Debug] 出口 IP 探测失败 {host}: {redact_log_line(str(exc))}")
-            if hard_fails >= 2:
-                break
-            continue
+                    log_callback(
+                        f"[Debug] 出口 IP 探测失败 {url.split('/')[2]}: "
+                        f"{redact_log_line(str(exc))}"
+                    )
+                if hard_fails >= 4:
+                    break
+                continue
+    except Exception as exc:
+        last_exc = exc
+
+    # 2) requests fallback
+    hard_fails = 0
+    try:
+        import requests
+        from urllib3.exceptions import InsecureRequestWarning
+
+        proxies = {"http": proxy_str, "https": proxy_str}
+        for url in urls:
+            try:
+                with warnings.catch_warnings():
+                    warnings.filterwarnings("ignore", category=InsecureRequestWarning)
+                    resp = requests.get(
+                        url, proxies=proxies, timeout=per_try, verify=False
+                    )
+                resp.raise_for_status()
+                ip = (resp.text or "").strip().split()[0]
+                if _re.match(r"^(?:\d{1,3}\.){3}\d{1,3}$", ip) or ":" in ip:
+                    if log_callback:
+                        log_callback(
+                            f"[*] 代理出口 IP: {ip} (via {url.split('/')[2]})"
+                        )
+                    return ip
+                last_exc = RuntimeError(f"非 IP 响应: {ip[:60]!r}")
+                hard_fails = 0
+            except Exception as exc:
+                last_exc = exc
+                hard_fails += 1
+                if log_callback:
+                    host = url.split("/")[2]
+                    log_callback(
+                        f"[Debug] 出口 IP 探测失败 {host}: "
+                        f"{redact_log_line(str(exc))}"
+                    )
+                if hard_fails >= 4:
+                    break
+                continue
+    except Exception as exc:
+        last_exc = exc
+
     raise RuntimeError(
         f"代理出口 IP 探测失败(timeout={per_try}s): {redact_log_line(str(last_exc))}"
     )
@@ -592,7 +672,7 @@ def create_browser_options(unique_profile=True) -> dict:
     if proxy:
         opts["proxy"] = _build_camoufox_proxy(proxy)
         try:
-            exit_ip = _resolve_proxy_exit_ip(proxy, timeout=8.0)
+            exit_ip = _resolve_proxy_exit_ip(proxy, timeout=20.0)
             blocked, meta = is_blocked_exit_ip(exit_ip)
             if blocked:
                 set_exit_context(proxy=proxy, exit_ip=exit_ip)
@@ -623,14 +703,21 @@ def create_browser_options(unique_profile=True) -> dict:
 
     # Profile 隔离
     if unique_profile:
-        profile_root = ensure_private_dir(
-            os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER)
-        )
+        # Windows: keep profiles under project dir to avoid Temp ACL / Session0 issues
+        if os.name == "nt":
+            profile_root = Path(__file__).resolve().parent / ".browser-profiles"
+            profile_root.mkdir(parents=True, exist_ok=True)
+        else:
+            profile_root = ensure_private_dir(
+                os.path.join(tempfile.gettempdir(), _PROFILE_ROOT_MARKER)
+            )
         profile_dir = str(
-            profile_root
+            Path(profile_root)
             / f"{os.getpid()}-{threading.get_ident()}-{uuid.uuid4().hex[:8]}"
         )
-        ensure_private_dir(profile_dir)
+        Path(profile_dir).mkdir(parents=True, exist_ok=True)
+        if os.name != "nt":
+            ensure_private_dir(profile_dir)
         opts["persistent_context"] = True
         opts["user_data_dir"] = profile_dir
         _tls.profile_dir = profile_dir

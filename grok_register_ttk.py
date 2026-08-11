@@ -493,6 +493,20 @@ def load_config():
     return config
 
 
+def _sleep_cancelable(seconds, should_stop=None) -> None:
+    """Sleep in short slices so stop flags can interrupt account gaps."""
+    import time as _t
+
+    end = _t.time() + max(0.0, float(seconds or 0))
+    while _t.time() < end:
+        if callable(should_stop) and should_stop():
+            return
+        remain = end - _t.time()
+        if remain <= 0:
+            break
+        _t.sleep(min(0.5, remain))
+
+
 def parse_account_interval() -> float:
     """解析 account_interval 配置，返回等待秒数。
 
