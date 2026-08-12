@@ -923,22 +923,45 @@ def _append_sso_bfs_flagged(email: str, sso: str, details: str, log_callback=Non
             log_callback(f"[CPA] 保存 bfs 标记记录失败: {exc}")
 
 
+def _registration_risk_should_block(state: dict) -> tuple:
+    """是否隔离当前 SSO，阻止其进入正常账号池和后续 OAuth。
+
+    升级后额外拦住：
+      - botFlagSource in (1, 2)（含 IP farm soft-flag / castle 等）
+      - policy=deny 且 event 非 registration（如 $login）
+    读不到风控字段时不硬拦，交给上层继续。
+    """
+    if not isinstance(state, dict):
+        return False, ""
+    details = str(state.get("bot_flag_details") or "").strip()
+    bf = state.get("bot_flag_source")
+    policy = str(state.get("policy") or "").strip().lower()
+    event = str(state.get("event") or "").strip()
+
+    # 1) 注册硬拒绝（原逻辑）
+    if state.get("denied"):
+        return True, details or "policy=deny,event=$registration"
+
+    # 2) botFlagSource=1/2：含 soft-flag IP 农场、castle 等（原先放行）
+    if bf in (1, 2):
+        return True, details or ("botFlagSource=%s" % bf)
+
+    # 3) policy=deny 其它 event（如 $login，原先放行）
+    if policy == "deny":
+        return True, details or ("policy=deny,event=%s" % (event or "unknown"))
+
+    return False, ""
+
+
 def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
-    """检查新账号是否被注册风控拒绝；无法判定时继续原有 OAuth 路径。"""
-    if not config.get("cpa_auto_add", False):
-        return {}
-    if not any(
-        str(config.get(key, "") or "").strip()
-        for key in ("cpa_auth_dir", "cpa_remote_url", "grok2api_auth_dir")
-    ):
-        return {}
+    """检查新账号风控状态；命中时保存 SSO 到隔离文件并终止正常入库。"""
     sso = _normalize_sso_token(raw_token)
     if not sso:
         raise RegistrationRiskDenied("注册风控检查失败: sso 为空")
 
     def _risk_log(message):
         if log_callback:
-            log_callback(f"[CPA] {str(message).strip()}")
+            log_callback(f"[风控] {str(message).strip()}")
 
     _risk_log("检查新账号注册风控状态 ...")
     state = _s2cpa.inspect_sso_account_state(
@@ -946,8 +969,9 @@ def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
         proxy=_resolve_cpa_proxy(),
         log=_risk_log,
     )
-    if state.get("denied"):
-        details = str(state.get("bot_flag_details") or "policy=deny,event=$registration")
+    block, details = _registration_risk_should_block(state)
+    if block:
+        details = str(details or state.get("bot_flag_details") or "registration_risk")
         _append_sso_risk_rejected(email, sso, details, log_callback=log_callback)
         try:
             _bf = state.get("bot_flag_source")
@@ -975,6 +999,8 @@ def ensure_sso_oauth_eligible(raw_token, email="", log_callback=None) -> dict:
         )
     if not state.get("found"):
         _risk_log(f"未读取到注册风控字段，继续 OAuth: {state.get('error') or 'unknown'}")
+    elif state.get("bot_flag_source") == 0:
+        _risk_log("注册风控状态可用: botFlagSource=0")
     return state
 
 
