@@ -753,7 +753,7 @@ def _parse_grok_account_state(page_html: str) -> dict:
         risk = None
     policy = detail_fields.get("policy", "").lower()
     event = detail_fields.get("event", "")
-    denied = policy == "deny" and event == "$registration"
+    denied = policy == "deny"
 
     return {
         "found": bool(source_match or details_match),
@@ -854,7 +854,7 @@ def run_check_sso_state(
     """批量读取 grok.com 账号风控状态，不换 token 不入库。
 
     export / clean_export 边检查边逐行追加写（0600），中断不丢已检查结果；
-    clean_export 写出 verdict=clean 的原始行（raw_line，每行一条），可直接复用为 --sso 输入。
+    clean_export 写出 verdict=clean 的原始行（raw_line，每行一条），仅用于本机后续 --sso 输入。
     """
     summary: dict = {
         "ok": True,

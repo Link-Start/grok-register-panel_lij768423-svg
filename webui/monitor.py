@@ -2100,7 +2100,7 @@ HTML = r"""<!DOCTYPE html>
           </details>
           <details class="faq-item" data-faq-item data-search="sso 风控 botFlagSource policy deny check-sso-state 检测 面板 粘贴">
             <summary>如何用 SSO 批量检测账号是否被风控</summary>
-            <div class="faq-answer">打开顶部“SSO 风控”，粘贴 <code>email----sso</code> 或纯 cookie，也可扫描待处理 / 全部账号 / 已隔离名单。面板用 SSO 访问 grok.com 读取 <code>botFlagSource</code> 和 <code>policy=deny</code>，不换 token、不入库。标记规则与注册门禁一致：<code>botFlagSource</code> 为 1/2，或任意 <code>policy=deny</code>。干净名单写到 <code>log/sso_clean.txt</code>，标记名单写到 <code>log/sso_flagged.jsonl</code>（不含 token）。命令行：<code>python scripts/check_sso_state.py --sso list.txt --from-config config.json</code>。</div>
+            <div class="faq-answer">打开顶部“SSO 风控”，粘贴 <code>email----sso</code> 或纯 cookie，也可扫描待处理 / 全部账号 / 已隔离名单。面板用 SSO 访问 grok.com 读取 <code>botFlagSource</code> 和 <code>policy=deny</code>，不换 token、不入库。标记规则与注册门禁一致：<code>botFlagSource</code> 为 1/2，或任意 <code>policy=deny</code>。面板下载只包含脱敏状态，不含 SSO；完整干净名单仅写入本机权限为 <code>0600</code> 的 <code>log/sso_clean.txt</code>，供主机上的 CLI 继续使用。标记名单写到 <code>log/sso_flagged.jsonl</code>（不含 token）。命令行：<code>python scripts/check_sso_state.py --sso list.txt --from-config config.json</code>。</div>
           </details>
           <details class="faq-item" data-faq-item data-search="卡住 浏览器 启动失败 turnstile 资料页 空页 并发 camoufox">
             <summary>注册卡在验证码、资料页或浏览器启动</summary>
@@ -3502,10 +3502,10 @@ async function exportSsoState(kind) {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = kind === "clean" ? "sso_clean.txt" : "sso_flagged.jsonl";
+    a.download = kind === "clean" ? "sso_clean_redacted.jsonl" : "sso_flagged_redacted.jsonl";
     a.click();
     URL.revokeObjectURL(url);
-    setMsg("sso-msg", "已导出 " + (data.lines || 0) + " 行 → " + (data.path || kind), "ok");
+    setMsg("sso-msg", "已导出 " + (data.lines || 0) + " 行脱敏状态记录", "ok");
   } catch (e) { setMsg("sso-msg", String(e.message || e), "err"); }
 }
 function renderBlacklist(bl, upd) {
