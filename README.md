@@ -27,8 +27,9 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口 |
 | 风控早停 | `botFlagSource=1` + `policy=deny` 时跳过后续 OAuth，避免无效重试 |
 | **BFS 检测** | 解码 access_token / SSO JWT，检查是否含 `bfs` claim（与 botFlag 独立）；注册后自动标记，面板可批量扫描 CPA |
+| **SSO 风控面板** | 用现有 SSO 读 grok.com 的 `botFlagSource` / `policy=deny`，不换 token；可粘贴或扫描库存，导出干净/标记名单 |
 | 编排器 | 多轮 batch、风控满 N 暂停、ASN 自动扩黑；规则写入 JSON 状态，不修改源码 |
-| **Live 面板** | 启停、并发、再跑 N、黑名单、时段成功率、本批代理流量、账号补录和 BFS 扫描；操作 API 需 `MONITOR_TOKEN` |
+| **Live 面板** | 启停、并发、再跑 N、黑名单、时段成功率、本批代理流量、账号补录、SSO 风控和 BFS 扫描；操作 API 需 `MONITOR_TOKEN` |
 | 外部代理池 | 面板单条/批量导入、去重、探活、启停、删除；记录出口 IP、ASN、延迟和冷却状态 |
 | 邮箱域名池 | 自有域名/子域名导入、provider 绑定、连续拒绝阈值、自动拉黑、活跃数限制和手动重置 |
 | 失败恢复 | 待处理 SSO / accounts 文本补录 CPA，跳过已有账号，成功后自动出队 |
@@ -355,6 +356,23 @@ python sso_to_auth_json.py \
   --from-config config.json \
   --consume-success \
   --report-json log/recovery_report.json
+```
+
+### SSO 风控检测（botFlag / policy）
+
+用现有 SSO 访问 grok.com，读取 `botFlagSource` / `policy=deny`，**不换 token、不入库**。判定与注册门禁一致：`botFlagSource` 为 1/2，或任意 `policy=deny`。
+
+| 能力 | 说明 |
+|------|------|
+| 面板 | 顶部「SSO 风控」：粘贴列表，或扫描待处理 / 全部账号 / 已隔离名单 |
+| 导出 | 标记 → `log/sso_flagged.jsonl`（不含 token）；干净 → `log/sso_clean.txt`（原始行，可再喂给 `--sso`） |
+| CLI | `python scripts/check_sso_state.py --sso list.txt --from-config config.json` |
+
+```bash
+python sso_to_auth_json.py --check-sso-state sso_list.txt --from-config config.json \
+  --sso-state-export log/sso_flagged.jsonl \
+  --sso-state-clean-export log/sso_clean.txt \
+  --report-json log/sso_state_report.json
 ```
 
 ### BFS 检测（JWT claim）

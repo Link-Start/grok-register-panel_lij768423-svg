@@ -14,6 +14,7 @@ tests=(
   tests/test_runtime_platform.py
   tests/test_windows_runtime.py
   tests/test_sso_recovery.py
+  tests/test_sso_state.py
   tests/test_registration_risk_gate.py
   tests/test_bfs_detect.py
   tests/test_bfs_ops.py
@@ -53,7 +54,9 @@ done
   run_until_100.py \
   sso_to_auth_json.py \
   scripts/check_bfs.py \
+  scripts/check_sso_state.py \
   webui/bfs_ops.py \
+  webui/sso_state_ops.py \
   static_asset_cache.py \
   batch_traffic.py \
   retry_policy.py \

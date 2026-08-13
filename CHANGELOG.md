@@ -5,6 +5,7 @@
 ### Added
 
 - Persist owner-only batch traffic history and show rolling average traffic per batch and per successful account in the live panel.
+- Add an SSO risk panel and CLI that check `botFlagSource` / `policy=deny` from existing SSO cookies without exchanging tokens.
 
 ## 0.4.2 - 2026-08-11
 

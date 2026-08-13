@@ -96,7 +96,7 @@ def test_help_and_faq_module():
     assert 'body.help-view-open #dashboard-view > :not(#help-view) { display: none; }' in html
     assert 'role="tablist"' in html
     assert 'id="faq-search"' in html
-    assert len(re.findall(r'<details class="faq-item" data-faq-item', html)) == 14
+    assert len(re.findall(r'<details class="faq-item" data-faq-item', html)) == 15
     assert 'policy=deny' in html
     assert 'bfs' in html.lower()
     assert 'id="bfs-title"' in html
@@ -138,6 +138,40 @@ def test_proxy_pool_panel_structure():
     assert 'pool = load_proxy_pool()' in worker
     assert '面板代理池没有健康且启用的代理' in worker
     assert 'redact_proxy(px)' in worker
+
+def test_embedded_scripts_parse():
+    mon = (ROOT / 'webui/monitor.py').read_text(encoding='utf-8')
+    html = mon.split('HTML = r"""', 1)[1].split('"""', 1)[0]
+    scripts = re.findall(r'<script>(.*?)</script>', html, re.S)
+    assert len(scripts) == 2
+    for script in scripts:
+        balance = 0
+        for ch in script:
+            if ch == '{':
+                balance += 1
+            elif ch == '}':
+                balance -= 1
+                assert balance >= 0
+        assert balance == 0
+
+
+def test_sso_state_panel_structure():
+    mon = (ROOT / 'webui/monitor.py').read_text(encoding='utf-8')
+    html = mon.split('HTML = r"""', 1)[1].split('"""', 1)[0]
+    assert 'id="sso-view-toggle"' in html
+    assert 'id="sso-view"' in html
+    assert 'id="sso-input"' in html
+    assert 'id="sso-body"' in html
+    assert 'id="sso-dash-title"' in html
+    assert 'function toggleSsoView()' in mon
+    assert 'function startSsoScan()' in mon
+    assert 'function refreshSsoState(' in mon
+    assert '/api/sso-state/start' in mon
+    assert 'view !== "sso"' in mon
+    assert 'from webui.sso_state_ops import' in mon
+    assert (ROOT / 'webui/sso_state_ops.py').is_file()
+    assert (ROOT / 'scripts/check_sso_state.py').is_file()
+
 
 def test_stats_refresh_persists_across_snapshot_polling():
     mon = (ROOT / 'webui/monitor.py').read_text(encoding='utf-8')
