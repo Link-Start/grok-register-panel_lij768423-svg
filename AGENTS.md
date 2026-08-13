@@ -27,6 +27,8 @@ bulk abuse.
   behavior there instead of branching throughout the registration flow.
 - `webui/monitor.py` owns the HTTP server and embedded UI. Its focused stores
   and operations live in `webui/*_store.py` and `webui/*_ops.py`.
+- `webui/sso_state_ops.py` owns the SSO botFlag / policy scan job. Reports must
+  not include raw SSO tokens; clean exports stay in `log/sso_clean.txt`.
 - `webui/proxy_store.py` owns proxy import, normalization, health, cooldown, and
   redacted API views. `webui/email_provider_store.py` owns provider config and
   secret-preserving updates. `webui/email_domain_store.py` owns domain rotation
