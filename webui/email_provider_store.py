@@ -388,7 +388,8 @@ def _is_configured(provider: str, values: dict) -> bool:
     if provider == "moemail":
         return bool(values.get("moemail_api_base") and values.get("moemail_api_key"))
     if provider == "outlook_rt":
-        return bool(values.get("outlook_rt_inventory"))
+        inventory = str(values.get("outlook_rt_inventory") or "").strip()
+        return bool(inventory and Path(inventory).expanduser().is_file())
     return False
 
 

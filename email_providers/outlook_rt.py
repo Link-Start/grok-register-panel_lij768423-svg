@@ -14,14 +14,24 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import os
 import secrets
 import threading
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from email_providers.common import extract_verification_code
+from secure_files import (
+    append_private_text,
+    atomic_write_text,
+    create_private_text,
+    ensure_private_dir,
+    exclusive_file_lock,
+)
 
 # Microsoft Authentication Broker — 实测可刷 M.C5… MSA RT 并读 Graph 邮件
 DEFAULT_CLIENT_ID = "9e5f94bc-e8a4-4e73-b8be-63364c29d753"
@@ -91,6 +101,7 @@ _refresh_locks_guard = threading.Lock()
 
 # refresh 连续失败多少次视为死号（秒退，避免空耗 180s）
 MAX_REFRESH_FAILURES = 2
+CLAIM_TTL_SECONDS = 60 * 60
 # 死号/不可用 client 的典型错误片段
 _DEAD_RT_MARKERS = (
     "client does not exist",
@@ -127,38 +138,80 @@ def _is_dead_rt_error(err: Any) -> bool:
     return any(marker.lower() in text for marker in _DEAD_RT_MARKERS)
 
 
-class _FileLock:
-    """跨线程/进程的库存文件锁（fcntl，失败时降级为进程内锁）。"""
+def _safe_error(exc: Any) -> str:
+    """Return an operational category without upstream response bodies."""
+    text = str(exc or "")
+    lowered = text.lower()
+    for marker in _DEAD_RT_MARKERS:
+        if marker.lower() in lowered:
+            return marker
+    for status in (400, 401, 403, 404, 408, 429, 500, 502, 503, 504):
+        if str(status) in text:
+            return f"HTTP {status}"
+    name = type(exc).__name__ if exc is not None else "unknown_error"
+    return name if name and name != "str" else "request_failed"
 
-    def __init__(self, path: Path):
-        self.path = path
-        self._fh = None
 
-    def __enter__(self):
-        self.path.parent.mkdir(parents=True, exist_ok=True)
-        self._fh = self.path.open("a+", encoding="utf-8")
+def _claim_dir(inventory_path: str) -> Path:
+    inventory = Path(normalize_inventory_path(inventory_path)).expanduser()
+    return Path(str(inventory) + ".claims")
+
+
+def _claim_path(inventory_path: str, email: str) -> Path:
+    digest = hashlib.sha256(email.strip().lower().encode("utf-8")).hexdigest()
+    return _claim_dir(inventory_path) / f"{digest}.claim"
+
+
+def _claim_is_active(path: Path, now: float) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        created_at = float(payload.get("created_at") or 0)
+    except (OSError, ValueError, TypeError, json.JSONDecodeError):
+        created_at = 0
+    if created_at > 0 and now - created_at <= CLAIM_TTL_SECONDS:
+        return True
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+    return False
+
+
+def _create_claim(inventory_path: str, email: str, token_key: str) -> bool:
+    path = _claim_path(inventory_path, email)
+    ensure_private_dir(path.parent)
+    if _claim_is_active(path, time.time()):
+        return False
+    try:
+        create_private_text(
+            path,
+            json.dumps(
+                {"token_key": token_key, "created_at": time.time(), "pid": os.getpid()},
+                ensure_ascii=True,
+            ) + "\n",
+        )
+        return True
+    except FileExistsError:
+        return False
+
+
+def _release_claim(inventory_path: str, email: str, token_key: str = "") -> None:
+    path = _claim_path(inventory_path, email)
+    if not path.is_file():
+        return
+    if token_key:
         try:
-            import fcntl
-
-            fcntl.flock(self._fh.fileno(), fcntl.LOCK_EX)
-        except Exception:
-            # Windows / 无 fcntl：仅依赖上层 _lock
-            pass
-        return self
-
-    def __exit__(self, exc_type, exc, tb):
-        if self._fh is not None:
-            try:
-                import fcntl
-
-                fcntl.flock(self._fh.fileno(), fcntl.LOCK_UN)
-            except Exception:
-                pass
-            try:
-                self._fh.close()
-            except Exception:
-                pass
-            self._fh = None
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if str(payload.get("token_key") or "") != token_key:
+                return
+        except (OSError, ValueError, TypeError, json.JSONDecodeError):
+            return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
 
 
 def _parse_jsonl_row(obj: dict) -> Optional[Dict[str, str]]:
@@ -291,25 +344,28 @@ def mark_used(
         safe = str(reason).replace("\n", " ").strip()[:120]
         line = f"{email_key}----{safe}"
     with _lock:
-        # 去重：已在 used 中则不再追加
-        existing = _load_used(used_file)
-        if email_key.lower() in existing:
+        with exclusive_file_lock(inventory_lock_path(inventory_path)):
+            existing = _load_used(used_file)
+            if email_key.lower() not in existing:
+                append_private_text(used_file, line + "\n")
+            _release_claim(inventory_path, email_key)
             _reserved.discard(email_key.lower())
-            return
-        with used_file.open("a", encoding="utf-8") as fh:
-            fh.write(line + "\n")
-        _reserved.discard(email_key.lower())
 
 
 def inventory_stats(inventory_path: str, used_path: str = "") -> Dict[str, int]:
-    accounts = load_inventory(inventory_path)
-    used = _load_used(used_path_for(inventory_path, used_path))
-    total = len(accounts)
-    available = sum(
-        1
-        for acc in accounts
-        if acc["email"].lower() not in used and acc["email"].lower() not in _reserved
-    )
+    with _lock:
+        with exclusive_file_lock(inventory_lock_path(inventory_path)):
+            accounts = load_inventory(inventory_path)
+            used = _load_used(used_path_for(inventory_path, used_path))
+            now = time.time()
+            total = len(accounts)
+            available = sum(
+                1
+                for acc in accounts
+                if acc["email"].lower() not in used
+                and acc["email"].lower() not in _reserved
+                and not _claim_is_active(_claim_path(inventory_path, acc["email"]), now)
+            )
     return {"total": total, "used": total - available, "available": available}
 
 
@@ -347,7 +403,7 @@ def _update_refresh_in_inventory(
         return
     # 线程锁 + 文件锁，避免多 worker 并发写串行/覆盖
     with _lock:
-        with _FileLock(inventory_lock_path(inventory_path)):
+        with exclusive_file_lock(inventory_lock_path(inventory_path)):
             lines = path.read_text(encoding="utf-8-sig").splitlines(True)
             out: List[str] = []
             changed = False
@@ -401,7 +457,7 @@ def _update_refresh_in_inventory(
                 else:
                     out.append(raw if raw.endswith("\n") else raw + "\n")
             if changed:
-                path.write_text("".join(out), encoding="utf-8")
+                atomic_write_text(path, "".join(out), encoding="utf-8")
 
 
 def refresh_access_token(
@@ -410,6 +466,7 @@ def refresh_access_token(
     *,
     inventory_path: str = "",
     default_client_id: str = "",
+    persist_refresh: bool = True,
 ) -> str:
     email_addr = account["email"]
     with _refresh_lock(email_addr):
@@ -458,7 +515,7 @@ def refresh_access_token(
                             if new_rt and new_rt != refresh_token:
                                 account["refresh_token"] = new_rt
                                 refresh_token = new_rt
-                                if inventory_path:
+                                if inventory_path and persist_refresh:
                                     _update_refresh_in_inventory(
                                         inventory_path,
                                         email_addr,
@@ -466,12 +523,18 @@ def refresh_access_token(
                                         client_id=client_id,
                                     )
                             return str(access)
-                        last_err = (
-                            token_data.get("error_description")
-                            or token_data.get("error")
-                            or getattr(resp, "text", "")[:200]
-                            or f"HTTP {getattr(resp, 'status_code', '?')}"
+                        error_code = str(token_data.get("error") or "").strip()
+                        description = str(token_data.get("error_description") or "")
+                        aadsts = next(
+                            (
+                                marker
+                                for marker in _DEAD_RT_MARKERS
+                                if marker.lower() in description.lower()
+                            ),
+                            "",
                         )
+                        status = getattr(resp, "status_code", "?")
+                        last_err = aadsts or error_code or f"HTTP {status}"
                         # 明确死号：不必继续扫 client
                         if _is_dead_rt_error(last_err) and any(
                             m in str(last_err).lower()
@@ -482,11 +545,13 @@ def refresh_access_token(
                                 "aadsts700084",
                             )
                         ):
-                            raise RuntimeError(f"Outlook RT refresh 失败: {last_err}")
+                            raise RuntimeError(
+                                f"Outlook RT refresh 失败: {_safe_error(last_err)}"
+                            )
                     except RuntimeError:
                         raise
                     except Exception as exc:
-                        last_err = exc
+                        last_err = _safe_error(exc)
             return None
 
         access = _try_clients(primary)
@@ -497,7 +562,7 @@ def refresh_access_token(
             access = _try_clients(fallback)
             if access:
                 return access
-        raise RuntimeError(f"Outlook RT refresh 失败: {last_err}")
+        raise RuntimeError(f"Outlook RT refresh 失败: {_safe_error(last_err)}")
 
 
 def take_mailbox(
@@ -524,28 +589,31 @@ def take_mailbox(
     last_err = ""
 
     for _ in range(attempts):
-        accounts = load_inventory(path)
         used_file = used_path_for(path, used_path)
-        used = _load_used(used_file)
         email = ""
         token_key = ""
         account: Dict[str, str] = {}
         with _lock:
-            picked = None
-            for acc in accounts:
-                cand = acc["email"].strip()
-                key = cand.lower()
-                if key in used or key in _reserved:
-                    continue
-                picked = acc
-                break
-            if not picked:
-                break
-            email = picked["email"].strip()
-            key = email.lower()
-            _reserved.add(key)
-            token_key = "outlook_rt:" + secrets.token_urlsafe(12)
-            account = dict(picked)
+            with exclusive_file_lock(inventory_lock_path(path)):
+                accounts = load_inventory(path)
+                used = _load_used(used_file)
+                picked = None
+                token_key = "outlook_rt:" + secrets.token_urlsafe(12)
+                for acc in accounts:
+                    cand = acc["email"].strip()
+                    key = cand.lower()
+                    if key in used or key in _reserved:
+                        continue
+                    if not _create_claim(path, cand, token_key):
+                        continue
+                    picked = acc
+                    break
+                if not picked:
+                    break
+                email = picked["email"].strip()
+                key = email.lower()
+                _reserved.add(key)
+                account = dict(picked)
             if not account.get("client_id") and default_client_id:
                 account["client_id"] = default_client_id
             _token_map[token_key] = {
@@ -571,20 +639,18 @@ def take_mailbox(
                 default_client_id=default_client_id or DEFAULT_CLIENT_ID,
             )
             if log_callback:
-                log_callback(
-                    f"[*] Outlook RT 预检 OK: {email} (at_len={len(access)})"
-                )
+                log_callback(f"[*] Outlook RT 预检 OK (at_len={len(access)})")
             return email, token_key
         except Exception as exc:
-            last_err = str(exc)
+            last_err = _safe_error(exc)
             if log_callback:
-                log_callback(f"[!] Outlook RT 预检失败，弃用 {email}: {exc}")
+                log_callback(f"[!] Outlook RT 预检失败，弃用当前库存项: {last_err}")
             try:
                 mark_used(
                     email,
                     path,
                     used_path,
-                    reason=f"precheck_fail:{last_err[:80]}",
+                    reason=f"precheck_fail:{last_err}",
                 )
             except Exception:
                 pass
@@ -604,7 +670,11 @@ def release_reservation(token_key: str = "", email: str = "") -> None:
         if token_key and token_key in _token_map:
             info = _token_map.pop(token_key, None) or {}
             em = str(info.get("email") or email or "").strip().lower()
+            inventory_path = str(info.get("inventory_path") or "")
             if em:
+                if inventory_path:
+                    with exclusive_file_lock(inventory_lock_path(inventory_path)):
+                        _release_claim(inventory_path, em, token_key)
                 _reserved.discard(em)
             return
         if email:
@@ -612,6 +682,10 @@ def release_reservation(token_key: str = "", email: str = "") -> None:
             for k, info in list(_token_map.items()):
                 if str(info.get("email") or "").lower() == email.strip().lower():
                     _token_map.pop(k, None)
+                    inventory_path = str(info.get("inventory_path") or "")
+                    if inventory_path:
+                        with exclusive_file_lock(inventory_lock_path(inventory_path)):
+                            _release_claim(inventory_path, email, k)
 
 
 def _resolve_session(
@@ -652,12 +726,11 @@ def list_messages(
     )
     status = getattr(resp, "status_code", 0)
     if status >= 400:
-        body = getattr(resp, "text", "")[:200]
-        raise RuntimeError(f"Graph messages HTTP {status}: {body}")
+        raise RuntimeError(f"Graph messages HTTP {status}")
     try:
         data = resp.json()
     except Exception as exc:
-        raise RuntimeError(f"Graph messages 响应无效: {exc}") from exc
+        raise RuntimeError("Graph messages 响应无效") from exc
     items = data.get("value") if isinstance(data, dict) else None
     if not isinstance(items, list):
         return []
@@ -694,7 +767,10 @@ def find_code_in_messages(
         )
         if after_ts > 0 and received:
             try:
-                ts = time.mktime(time.strptime(received[:19], "%Y-%m-%dT%H:%M:%S"))
+                parsed = datetime.fromisoformat(received.replace("Z", "+00:00"))
+                if parsed.tzinfo is None:
+                    parsed = parsed.replace(tzinfo=timezone.utc)
+                ts = parsed.timestamp()
                 # Graph 时间为 UTC；允许 5 分钟时钟偏差
                 if ts + 300 < after_ts - 120:
                     continue
@@ -739,6 +815,7 @@ def wait_for_code(
     seen: set = set()
     last_refresh_err = ""
     refresh_failures = int(info.get("refresh_failures") or 0)
+    graph_transient_failure = False
     max_rf = max(1, int(max_refresh_failures or MAX_REFRESH_FAILURES))
 
     def _retire(reason: str) -> None:
@@ -748,7 +825,9 @@ def wait_for_code(
             mark_used(mailbox, inventory_path, used_path, reason=reason)
         except Exception as exc:
             if log_callback:
-                log_callback(f"[Debug] Outlook RT 标记已用失败: {exc}")
+                log_callback(
+                    f"[Debug] Outlook RT 标记已用失败: {_safe_error(exc)}"
+                )
         release_reservation(token_key, mailbox)
 
     while time.time() < deadline:
@@ -764,50 +843,55 @@ def wait_for_code(
             refresh_failures = 0
             info["refresh_failures"] = 0
         except Exception as exc:
-            last_refresh_err = str(exc)
+            last_refresh_err = _safe_error(exc)
             refresh_failures += 1
             info["refresh_failures"] = refresh_failures
             if log_callback:
                 log_callback(
                     f"[Debug] Outlook RT token 刷新失败 "
-                    f"({refresh_failures}/{max_rf}): {exc}"
+                    f"({refresh_failures}/{max_rf}): {last_refresh_err}"
                 )
             # 死号或连续失败：秒退，不再空耗 timeout
             if _is_dead_rt_error(exc) or refresh_failures >= max_rf:
                 _retire(f"refresh_fail:{last_refresh_err[:80]}")
                 raise Exception(
-                    f"Outlook RT refresh 不可用，已弃用 {mailbox}: {last_refresh_err}"
+                    f"Outlook RT refresh 不可用，已弃用当前库存项: {last_refresh_err}"
                 ) from exc
             sleep_with_cancel(min(poll_interval, 3), cancel_callback)
             continue
         try:
             messages = list_messages(http_get, access)
         except Exception as exc:
+            graph_transient_failure = True
+            safe_graph_error = _safe_error(exc)
             if log_callback:
-                log_callback(f"[Debug] Outlook RT 拉取邮件失败: {exc}")
+                log_callback(f"[Debug] Outlook RT 拉取邮件失败: {safe_graph_error}")
             # Graph 401/403 也计一次 refresh 相关失败，避免死循环
             status = getattr(getattr(exc, "response", None), "status_code", None)
-            err_s = str(exc)
+            err_s = safe_graph_error
             if "401" in err_s or "403" in err_s or status in (401, 403):
                 refresh_failures += 1
                 info["refresh_failures"] = refresh_failures
                 if refresh_failures >= max_rf:
                     _retire(f"graph_auth_fail:{err_s[:80]}")
-                    raise Exception(
-                        f"Outlook RT Graph 鉴权失败，已弃用 {mailbox}: {exc}"
-                    ) from exc
+                    raise Exception("Outlook RT Graph 鉴权失败，已弃用当前库存项") from exc
             sleep_with_cancel(poll_interval, cancel_callback)
             continue
         code = find_code_in_messages(messages, seen=seen, after_ts=after_ts)
         if code:
-            if log_callback:
-                log_callback(f"[*] Outlook RT 提取到验证码: {code} ({mailbox})")
             if mark_on_success and inventory_path:
                 try:
                     mark_used(mailbox, inventory_path, used_path, reason="code_ok")
                 except Exception as exc:
                     if log_callback:
-                        log_callback(f"[Debug] Outlook RT 标记已用失败: {exc}")
+                        log_callback(
+                            f"[!] Outlook RT 库存状态写入失败: {_safe_error(exc)}"
+                        )
+                    raise RuntimeError(
+                        "Outlook RT 库存状态写入失败，当前项保持预留"
+                    ) from exc
+            if log_callback:
+                log_callback("[*] Outlook RT 已提取验证码并完成库存记账")
             release_reservation(token_key, mailbox)
             return code
         if log_callback:
@@ -822,7 +906,7 @@ def wait_for_code(
     # - 必须 release 预留，否则同进程换号会误判「库存耗尽」
     # - 若 refresh 一直正常（last_refresh_err 空），说明 xAI 侧可能已占用该邮箱，
     #   mark used 避免反复空等；若 refresh 曾失败则已在上面 retire
-    if inventory_path and not last_refresh_err:
+    if inventory_path and not last_refresh_err and not graph_transient_failure:
         try:
             mark_used(
                 mailbox,
@@ -832,9 +916,11 @@ def wait_for_code(
             )
         except Exception as exc:
             if log_callback:
-                log_callback(f"[Debug] Outlook RT 标记已用失败: {exc}")
+                log_callback(
+                    f"[Debug] Outlook RT 标记已用失败: {_safe_error(exc)}"
+                )
     release_reservation(token_key, mailbox)
-    raise Exception(f"Outlook RT 在 {timeout}s 内未收到验证码邮件 ({mailbox}){hint}")
+    raise Exception(f"Outlook RT 在 {timeout}s 内未收到验证码邮件{hint}")
 
 
 def probe_inventory(
@@ -848,16 +934,15 @@ def probe_inventory(
     stats = inventory_stats(inventory_path, used_path)
     if stats["available"] <= 0:
         return f"库存 total={stats['total']} available=0（请补充 jsonl 或清理 used）"
-    accounts = load_inventory(inventory_path)
-    used = _load_used(used_path_for(inventory_path, used_path))
-    sample = None
-    for acc in accounts:
-        if acc["email"].lower() not in used:
-            sample = dict(acc)
-            break
-    if not sample:
-        return f"库存 total={stats['total']} available=0"
+    email = ""
+    token_key = ""
     try:
+        email, token_key = take_mailbox(
+            inventory_path,
+            used_path=used_path,
+            default_client_id=default_client_id,
+        )
+        sample = dict(_resolve_session(token_key, email)["account"])
         access = refresh_access_token(
             http_post,
             sample,
@@ -866,10 +951,13 @@ def probe_inventory(
         )
         return (
             f"库存 total={stats['total']} available={stats['available']}；"
-            f"样本 {sample['email']} refresh OK (at_len={len(access)})"
+            f"样本 refresh OK (at_len={len(access)})"
         )
     except Exception as exc:
         return (
             f"库存 total={stats['total']} available={stats['available']}；"
-            f"样本 refresh 失败: {exc}"
+            f"样本 refresh 失败: {_safe_error(exc)}"
         )
+    finally:
+        if token_key:
+            release_reservation(token_key, email)

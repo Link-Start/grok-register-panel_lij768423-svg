@@ -2,14 +2,27 @@
 from __future__ import annotations
 
 import json
+import multiprocessing
+import os
 import sys
 import tempfile
+import time
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from email_providers import outlook_rt
+
+
+def _claim_mailbox_worker(inventory: str, ready, release, results) -> None:
+    from email_providers import outlook_rt as provider
+
+    email, token = provider.take_mailbox(inventory)
+    results.put(email)
+    ready.set()
+    release.wait(10)
+    provider.release_reservation(token, email)
 
 
 def _write_jsonl(path: Path, rows: list[dict]) -> None:
@@ -85,6 +98,38 @@ def test_take_mark_used_and_stats():
         assert "one@outlook.com" in used_file.read_text(encoding="utf-8")
 
 
+def test_cross_process_claims_are_unique():
+    with tempfile.TemporaryDirectory() as tmp:
+        inv = Path(tmp) / "stock.jsonl"
+        _write_jsonl(
+            inv,
+            [
+                {"email": "first@example.test", "refresh_token": "RT_FIRST"},
+                {"email": "second@example.test", "refresh_token": "RT_SECOND"},
+            ],
+        )
+        ctx = multiprocessing.get_context("spawn")
+        ready1, ready2 = ctx.Event(), ctx.Event()
+        release = ctx.Event()
+        results = ctx.Queue()
+        workers = [
+            ctx.Process(
+                target=_claim_mailbox_worker,
+                args=(str(inv), ready, release, results),
+            )
+            for ready in (ready1, ready2)
+        ]
+        for worker in workers:
+            worker.start()
+        assert ready1.wait(10) and ready2.wait(10)
+        claimed = {results.get(timeout=5), results.get(timeout=5)}
+        release.set()
+        for worker in workers:
+            worker.join(10)
+            assert worker.exitcode == 0
+        assert claimed == {"first@example.test", "second@example.test"}
+
+
 def test_find_code_in_messages():
     messages = [
         {
@@ -97,6 +142,29 @@ def test_find_code_in_messages():
     ]
     code = outlook_rt.find_code_in_messages(messages, seen=set(), after_ts=0)
     assert code == "QO7-TUD"
+
+
+def test_graph_timestamp_is_utc_independent_of_host_timezone():
+    if not hasattr(time, "tzset"):
+        return
+    previous = os.environ.get("TZ")
+    try:
+        os.environ["TZ"] = "America/Los_Angeles"
+        time.tzset()
+        messages = [{
+            "id": "utc",
+            "subject": "ABC-123 xAI verification code",
+            "bodyPreview": "verification code ABC-123",
+            "receivedDateTime": "2026-01-01T00:00:00Z",
+        }]
+        after = 1767225900.0  # 2026-01-01T00:05:00Z
+        assert outlook_rt.find_code_in_messages(messages, after_ts=after) == "ABC-123"
+    finally:
+        if previous is None:
+            os.environ.pop("TZ", None)
+        else:
+            os.environ["TZ"] = previous
+        time.tzset()
 
 
 def test_wait_for_code_with_fake_http():
@@ -157,6 +225,10 @@ def test_wait_for_code_with_fake_http():
         # refresh rotation persisted
         row = json.loads(inv.read_text(encoding="utf-8").splitlines()[0])
         assert row["refresh_token"] == "RT_NEW"
+        joined = "\n".join(logs)
+        assert "fake@outlook.com" not in joined
+        assert "CXX-PC2" not in joined
+        assert "RT_NEW" not in joined
 
 
 def test_provider_store_outlook_rt_schema():
@@ -168,6 +240,10 @@ def test_provider_store_outlook_rt_schema():
         email_provider_store.CONFIG_PATH = base / "config.json"
         email_provider_store.LOCK_PATH = base / "config.json.lock"
         try:
+            (base / "a.jsonl").write_text(
+                '{"email":"configured@example.test","refresh_token":"RT"}\n',
+                encoding="utf-8",
+            )
             saved = email_provider_store.save_email_provider_config(
                 "outlook_rt",
                 {
@@ -309,12 +385,90 @@ def test_wait_for_code_fast_fail_on_dead_refresh():
         assert "dead2@outlook.com" in used
 
 
+def test_probe_persists_rotated_refresh_token_without_consuming_inventory():
+    with tempfile.TemporaryDirectory() as tmp:
+        inv = Path(tmp) / "stock.jsonl"
+        _write_jsonl(
+            inv,
+            [{"email": "probe@example.test", "refresh_token": "RT_ORIGINAL"}],
+        )
+
+        class Resp:
+            status_code = 200
+            text = '{"access_token":"AT","refresh_token":"RT_ROTATED"}'
+
+            def json(self):
+                return {"access_token": "AT", "refresh_token": "RT_ROTATED"}
+
+        detail = outlook_rt.probe_inventory(lambda *_a, **_k: Resp(), str(inv))
+        assert "refresh OK" in detail
+        assert "probe@example.test" not in detail
+        row = json.loads(inv.read_text(encoding="utf-8").splitlines()[0])
+        assert row["refresh_token"] == "RT_ROTATED"
+        stats = outlook_rt.inventory_stats(str(inv))
+        assert stats == {"total": 1, "used": 0, "available": 1}
+
+
+def test_transient_graph_failure_does_not_consume_inventory():
+    with tempfile.TemporaryDirectory() as tmp:
+        inv = Path(tmp) / "stock.jsonl"
+        _write_jsonl(
+            inv,
+            [{"email": "transient@example.test", "refresh_token": "RT_PRIVATE"}],
+        )
+        outlook_rt._reserved.clear()
+        outlook_rt._token_map.clear()
+        email, token_key = outlook_rt.take_mailbox(str(inv))
+
+        class Resp:
+            status_code = 200
+            text = '{"access_token":"AT"}'
+
+            def json(self):
+                return {"access_token": "AT"}
+
+        def fail_graph(*_args, **_kwargs):
+            raise RuntimeError("Graph messages HTTP 503 secret=RT_PRIVATE")
+
+        ticks = iter([0.0, 0.0, 0.0, 2.0])
+        original_time = outlook_rt.time.time
+        outlook_rt.time.time = lambda: next(ticks, 2.0)
+        logs = []
+        try:
+            try:
+                outlook_rt.wait_for_code(
+                    fail_graph,
+                    lambda *_a, **_k: Resp(),
+                    token_key,
+                    email,
+                    timeout=1,
+                    poll_interval=0,
+                    raise_if_cancelled=lambda _c: None,
+                    sleep_with_cancel=lambda _s, _c: None,
+                    log_callback=logs.append,
+                )
+                raise AssertionError("expected timeout")
+            except Exception as exc:
+                assert "未收到验证码" in str(exc)
+        finally:
+            outlook_rt.time.time = original_time
+        used = outlook_rt.used_path_for(str(inv))
+        assert not used.exists() or "transient@example.test" not in used.read_text(
+            encoding="utf-8"
+        )
+        assert "RT_PRIVATE" not in "\n".join(logs)
+
+
 if __name__ == "__main__":
     test_load_jsonl_and_text_formats()
     test_take_mark_used_and_stats()
+    test_cross_process_claims_are_unique()
     test_find_code_in_messages()
+    test_graph_timestamp_is_utc_independent_of_host_timezone()
     test_wait_for_code_with_fake_http()
     test_provider_store_outlook_rt_schema()
     test_take_mailbox_precheck_skips_dead_rt()
     test_wait_for_code_fast_fail_on_dead_refresh()
+    test_probe_persists_rotated_refresh_token_without_consuming_inventory()
+    test_transient_graph_failure_does_not_consume_inventory()
     print("ok")
