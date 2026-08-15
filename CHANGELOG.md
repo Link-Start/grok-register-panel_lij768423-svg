@@ -7,6 +7,14 @@
 - Persist owner-only batch traffic history and show rolling average traffic per batch and per successful account in the live panel.
 - Add an SSO risk panel and CLI that check `botFlagSource` / `policy=deny` from existing SSO cookies without exchanging tokens; panel exports contain redacted state only, while reusable clean SSO remains host-local.
 
+## 0.4.3 - 2026-08-15
+
+### Fixed
+
+- Recognize SpaceXAI numeric confirmation codes (`427-599`) in Outlook RT and other mail providers without treating CSS tokens such as `per-100` as OTPs.
+- Wait for Cloudflare on the profile step before filling name/password, then type with native keyboard events so React Hook Form accepts the values.
+- Keep the signup tab alive after submit instead of jumping to `/sign-in` and aborting `createAccount`; recover two-step email-then-password login when a session lands on sign-in.
+
 ## 0.4.2 - 2026-08-11
 
 ### Fixed

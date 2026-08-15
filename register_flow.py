@@ -30,8 +30,9 @@ SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 CF_FIRST_RETRY_AFTER = 3.0   # 检测到 CF 后 3 秒即开始尝试
 CF_RETRY_INTERVAL = 8.0      # 两次完整 getTurnstileToken 间隔（原 15s 过慢）
 CF_WAIT_LOG_INTERVAL = 5.0
-PROFILE_TIMEOUT = 45         # 资料页总超时（含 Turnstile；原 10s 过短）
+PROFILE_TIMEOUT = 70         # 资料页总超时（含 Turnstile / OTP 未跳转）
 PROFILE_CF_MAX_ROUNDS = 3    # Turnstile 完整复用最大次数，超限换口
+PROFILE_PROBE_LOG_INTERVAL = 5.0
 
 _deps: Dict[str, Any] = {}
 
@@ -195,12 +196,14 @@ def _native_input_candidates(kind: str):
                 score = 100 if max_len == 1 else 0
                 score += 80 if autocomplete == "one-time-code" else 0
             elif kind == "given":
-                score = 100 if testid == "givenname" or name == "givenname" else 0
-                score += 90 if autocomplete == "given-name" else 0
+                score = 100 if testid in ("givenname", "firstname") or name in ("givenname", "firstname") else 0
+                score += 90 if autocomplete in ("given-name", "givenname") else 0
+                score += 50 if "first name" in meta or "firstname" in meta else 0
                 score += 40 if "given" in meta or "名" in meta else 0
             elif kind == "family":
-                score = 100 if testid == "familyname" or name == "familyname" else 0
-                score += 90 if autocomplete == "family-name" else 0
+                score = 100 if testid in ("familyname", "lastname") or name in ("familyname", "lastname") else 0
+                score += 90 if autocomplete in ("family-name", "familyname") else 0
+                score += 50 if "last name" in meta or "lastname" in meta else 0
                 score += 40 if "family" in meta or "姓" in meta else 0
             elif kind == "password":
                 score = 110 if typ == "password" else 0
@@ -241,6 +244,136 @@ def _native_fill_profile(given_name: str, family_name: str, password: str) -> bo
             _native_type_element(secret[0], password),
         )
     )
+
+
+_SIGNUP_PROBE_JS = r"""
+function isVisible(node, allowHidden) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden') return false;
+  if (!allowHidden && style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return allowHidden || (rect.width > 0 && rect.height > 0);
+}
+function pick(sel) {
+  return Array.from(document.querySelectorAll(sel)).find((n) => {
+    const tag = (n.tagName || '').toLowerCase();
+    if (tag !== 'input' && tag !== 'textarea') {
+      const inner = n.querySelector('input,textarea');
+      return inner && isVisible(inner, false) && !inner.disabled && !inner.readOnly;
+    }
+    return isVisible(n, n.hasAttribute('data-input-otp')) && !n.disabled && !n.readOnly;
+  }) || null;
+}
+const given = pick('input[data-testid="givenName"], [data-testid="givenName"] input, input[name="givenName"], input[autocomplete="given-name"], input[name="firstName"], input[autocomplete="givenname"]');
+const family = pick('input[data-testid="familyName"], [data-testid="familyName"] input, input[name="familyName"], input[autocomplete="family-name"], input[name="lastName"], input[autocomplete="familyname"]');
+const password = pick('input[data-testid="password"], [data-testid="password"] input, input[name="password"], input[type="password"], input[autocomplete="new-password"]');
+const otp = pick('input[data-input-otp], input[data-input-otp="true"], input[autocomplete="one-time-code"], input[name="code"]');
+const cfInput = document.querySelector('input[name="cf-turnstile-response"]');
+const cf = !!cfInput
+  || !!document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
+const body = String(document.body && document.body.innerText || '').replace(/\s+/g, ' ');
+const low = body.toLowerCase();
+const title = String(document.title || '');
+const cfChall = /just a moment|checking your browser|cf-challenge|attention required/.test(low)
+  || /just a moment/i.test(title);
+const existing = (/already have an account|already exists|existing account|account exists|已有账号|已有帳戶/.test(low)
+  && !!password && !given);
+const buttons = Array.from(document.querySelectorAll('button, [role="button"], input[type="submit"]'))
+  .filter((n) => isVisible(n, false) && !n.disabled)
+  .map((n) => String(n.innerText || n.value || n.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
+  .filter(Boolean)
+  .slice(0, 8);
+let step = 'unknown';
+if (cfChall) step = 'wait-cf';
+else if (given && family && password) step = 'profile';
+else if (existing) step = 'existing-account';
+else if (cf && !given) step = 'wait-cf';
+else if (otp || /enter (the )?code|verification code|confirmation code|验证码/.test(low)) step = 'still-otp';
+return {
+  step: step,
+  cf: cf,
+  cfChall: cfChall,
+  hasGiven: !!given,
+  hasFamily: !!family,
+  hasPassword: !!password,
+  hasOtp: !!otp,
+  buttons: buttons,
+  title: title.slice(0, 80),
+  path: String(location.pathname || '') + String(location.search || ''),
+  hint: body.slice(0, 160)
+};
+"""
+
+
+def _probe_signup_page() -> dict:
+    refresh_active_page()
+    if not page:
+        return {"step": "no-page"}
+    try:
+        raw = page.run_js(_SIGNUP_PROBE_JS)
+    except Exception as exc:
+        return {"step": "probe-error", "hint": str(exc)[:160]}
+    if isinstance(raw, dict):
+        return raw
+    return {"step": "probe-error", "hint": str(raw)[:160]}
+
+
+def _click_continue_if_any() -> str:
+    native = _native_click_action(
+        ("确认邮箱", "继续", "下一步", "confirm", "continue", "next", "verify", "submit")
+    )
+    if native:
+        return f"native:{native}"
+    try:
+        clicked = page.run_js(
+            r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+const form = document.querySelector('form');
+if (form && form.requestSubmit) {
+  try { form.requestSubmit(); return 'requestSubmit'; } catch (e) {}
+}
+const buttons = Array.from(document.querySelectorAll('button[type="submit"], button, [role="button"]'))
+  .filter((n) => isVisible(n) && !n.disabled);
+const btn = buttons.find((n) => {
+  const t = String(n.innerText || n.textContent || '').replace(/\s+/g, '').toLowerCase();
+  return /确认邮箱|继续|下一步|confirm|continue|next|verify|submit/.test(t);
+}) || buttons.find((n) => n.type === 'submit') || null;
+if (!btn) return 'no-button';
+btn.focus();
+btn.click();
+return 'clicked';
+            """
+        )
+        return str(clicked or "")
+    except Exception:
+        return ""
+
+
+def _try_otp_enter() -> None:
+    try:
+        page.run_js(
+            r"""
+const otp = document.querySelector('input[data-input-otp], input[data-input-otp="true"], input[autocomplete="one-time-code"], input[name="code"]');
+if (otp) {
+  otp.focus();
+  otp.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter', code: 'Enter' }));
+  otp.dispatchEvent(new KeyboardEvent('keyup', { bubbles: true, key: 'Enter', code: 'Enter' }));
+}
+const form = otp && otp.form;
+if (form && form.requestSubmit) {
+  try { form.requestSubmit(); } catch (e) {}
+}
+            """
+        )
+    except Exception:
+        pass
 
 
 def _dismiss_cookie_consent(log_callback=None):
@@ -1191,8 +1324,11 @@ function setInputValue(input, value) {
 }
 
 const aggregate = Array.from(document.querySelectorAll(
-  'input[data-input-otp=\"true\"], input[name=\"code\"], input[autocomplete=\"one-time-code\"], input[inputmode=\"numeric\"], input[inputmode=\"text\"]'
-)).find((node) => isVisible(node) && !node.disabled && !node.readOnly && Number(node.maxLength || 6) > 1);
+  'input[data-input-otp], input[data-input-otp=\"true\"], input[name=\"code\"], input[autocomplete=\"one-time-code\"], input[inputmode=\"numeric\"], input[inputmode=\"text\"]'
+)).find((node) => {
+    const hiddenOtp = node.hasAttribute('data-input-otp');
+    return (hiddenOtp || isVisible(node)) && !node.disabled && !node.readOnly && Number(node.maxLength || 6) > 1;
+});
 
 if (aggregate) {
     aggregate.focus();
@@ -1271,10 +1407,34 @@ return 'clicked';
                 """
             )
 
-        if clicked == "clicked" or clicked == "no-button":
+        if clicked == "clicked" or clicked == "no-button" or clicked:
             if log_callback:
                 log_callback(f"[*] 已填写验证码并提交: {code}")
-            sleep_with_cancel(1.5, cancel_callback)
+            _try_otp_enter()
+            wait_until = time.time() + 12
+            last_step = ""
+            while time.time() < wait_until:
+                raise_if_cancelled(cancel_callback)
+                info = _probe_signup_page()
+                step = str(info.get("step") or "")
+                if step != last_step and log_callback:
+                    log_callback(
+                        f"[*] 验证码后页面 step={step} path={info.get('path') or ''} "
+                        f"cf={info.get('cf')} buttons={info.get('buttons') or []}"
+                    )
+                    last_step = step
+                if step in ("profile", "wait-cf", "existing-account"):
+                    return code
+                if step == "still-otp":
+                    _click_continue_if_any()
+                    _try_otp_enter()
+                sleep_with_cancel(0.6, cancel_callback)
+            if log_callback:
+                info = _probe_signup_page()
+                log_callback(
+                    f"[!] 验证码已填但未进入资料页 step={info.get('step')} "
+                    f"hint={(info.get('hint') or '')[:120]}"
+                )
             return code
 
         sleep_with_cancel(0.5, cancel_callback)
@@ -1565,6 +1725,7 @@ def fill_profile_and_submit(timeout=None, log_callback=None, cancel_callback=Non
     saw_cf_wait = False
     form_seen = False
     cf_rounds = 0
+    last_probe_log = 0.0
 
     def _maybe_log_cf_wait(message, token_len):
         nonlocal last_cf_log_at, last_logged_token_len
@@ -1599,6 +1760,7 @@ def fill_profile_and_submit(timeout=None, log_callback=None, cancel_callback=Non
     while time.time() < deadline:
         raise_if_cancelled(cancel_callback)
         if not form_filled_once:
+            # React Hook Form 只认真实键盘；JS setter 会留下 “You must provide a first name”
             if _native_fill_profile(given_name, family_name, password):
                 filled = "native-filled"
             else:
@@ -1638,9 +1800,46 @@ function setInputValue(input, value) {
     return String(input.value || '').trim() === String(value || '').trim();
 }
 
-const givenInput = pickInput('input[data-testid="givenName"], input[name="givenName"], input[autocomplete="given-name"], input[aria-label*="名"]');
-const familyInput = pickInput('input[data-testid="familyName"], input[name="familyName"], input[autocomplete="family-name"], input[aria-label*="姓"]');
-const passwordInput = pickInput('input[data-testid="password"], input[name="password"], input[type="password"], input[autocomplete="new-password"]');
+function pickField(selectors) {
+    for (const selector of selectors) {
+        const hit = pickInput(selector);
+        if (hit) return hit;
+        const wrap = Array.from(document.querySelectorAll(selector)).find((node) => {
+            const inner = node.querySelector && node.querySelector('input,textarea');
+            return inner && isVisible(inner) && !inner.disabled && !inner.readOnly;
+        });
+        if (wrap) {
+            const inner = wrap.querySelector('input,textarea');
+            if (inner) return inner;
+        }
+    }
+    return null;
+}
+
+const givenInput = pickField([
+    'input[data-testid="givenName"]', '[data-testid="givenName"]',
+    'input[name="givenName"]', 'input[autocomplete="given-name"]',
+    'input[name="firstName"]', 'input[autocomplete="givenname"]',
+    'input[aria-label*="名"]', 'input[placeholder*="First" i]',
+]);
+const familyInput = pickField([
+    'input[data-testid="familyName"]', '[data-testid="familyName"]',
+    'input[name="familyName"]', 'input[autocomplete="family-name"]',
+    'input[name="lastName"]', 'input[autocomplete="familyname"]',
+    'input[aria-label*="姓"]', 'input[placeholder*="Last" i]',
+]);
+const passwordInput = pickField([
+    'input[data-testid="password"]', '[data-testid="password"]',
+    'input[name="password"]', 'input[type="password"]',
+    'input[autocomplete="new-password"]',
+]);
+
+const cfEarly = document.querySelector('input[name="cf-turnstile-response"]')
+  || document.querySelector('iframe[src*="turnstile"], div.cf-turnstile, [data-sitekey], script[src*="turnstile"]');
+if ((!givenInput || !familyInput || !passwordInput) && cfEarly) {
+    const token = String((document.querySelector('input[name="cf-turnstile-response"]') || {}).value || '').trim();
+    return 'wait-cloudflare:' + token.length;
+}
 
 if (!givenInput || !familyInput || !passwordInput) return 'not-ready';
 
@@ -1682,13 +1881,15 @@ return 'filled-no-submit';
                 )
 
             if isinstance(filled, str) and filled.startswith("wait-cloudflare"):
-                form_filled_once = True
+                # CF 通过前表单可能还没挂上；绝不能标 form_filled_once，
+                # 否则 token 到手后会空表提交 → "You must provide a first name"。
                 form_seen = True
                 saw_cf_wait = True
                 token_len = filled.split(":", 1)[1] if ":" in filled else "0"
                 last_state = f"wait-cf:{token_len}"
                 _maybe_log_cf_wait(
-                    f"[*] 资料已填写，等待 Cloudflare 人机验证通过... 当前token长度={token_len}",
+                    f"[*] 资料页等待 Cloudflare 人机验证... token长度={token_len} "
+                    f"（验证通过后再填姓名/密码）",
                     token_len,
                 )
                 now = time.time()
@@ -1725,6 +1926,49 @@ return 'filled-no-submit';
                 continue
             elif filled == "not-ready":
                 last_state = "not-ready"
+                info = _probe_signup_page()
+                step = str(info.get("step") or "")
+                now = time.time()
+                if log_callback and now - last_probe_log >= PROFILE_PROBE_LOG_INTERVAL:
+                    log_callback(
+                        f"[Debug] 资料页未就绪 step={step} cf={info.get('cf')} "
+                        f"path={info.get('path') or ''} buttons={info.get('buttons') or []} "
+                        f"hint={(info.get('hint') or '')[:100]}"
+                    )
+                    last_probe_log = now
+                if step == "wait-cf":
+                    form_seen = True
+                    saw_cf_wait = True
+                    last_state = "wait-cf:probe"
+                    token_len = "0"
+                    _maybe_log_cf_wait(
+                        "[*] 资料页先出现 Cloudflare，等待人机验证后再出表单...",
+                        token_len,
+                    )
+                    if wait_cf_since is None:
+                        wait_cf_since = now
+                    if _should_retry_cf(wait_cf_since, last_cf_retry_at, now):
+                        cf_rounds += 1
+                        if cf_rounds > PROFILE_CF_MAX_ROUNDS:
+                            _raise_profile_fail()
+                        synced = _try_sync_turnstile(
+                            log_callback=log_callback,
+                            cancel_callback=cancel_callback,
+                            reason="资料表单未出，先复用 Turnstile",
+                        )
+                        last_cf_retry_at = time.time()
+                        if synced:
+                            wait_cf_since = None
+                    sleep_with_cancel(0.8, cancel_callback)
+                    continue
+                if step == "existing-account":
+                    raise Exception(
+                        "资料页变成已有账号/登录页，当前邮箱可能已注册: "
+                        f"{(info.get('hint') or '')[:80]}"
+                    )
+                if step == "still-otp":
+                    _click_continue_if_any()
+                    _try_otp_enter()
                 sleep_with_cancel(0.5, cancel_callback)
                 continue
 
@@ -1835,8 +2079,54 @@ btn.focus(); btn.click(); return 'submitted';
 
         if submit_state == "submitted":
             if log_callback:
-                log_callback(f"[*] 已填写注册资料并提交: {given_name} {family_name}")
-            return {"given_name": given_name, "family_name": family_name, "password": password}
+                log_callback(f"[*] 已点击资料提交: {given_name} {family_name}")
+            # 等 createAccount 真正落地：切走 sign-up / 出现 sso / 报错。
+            settle_until = time.time() + 12
+            last_hint = ""
+            while time.time() < settle_until:
+                raise_if_cancelled(cancel_callback)
+                try:
+                    cur = str(getattr(page, "url", "") or "")
+                except Exception:
+                    cur = ""
+                info = _probe_signup_page()
+                step = str(info.get("step") or "")
+                hint = str(info.get("hint") or "")
+                if hint and hint != last_hint and log_callback:
+                    log_callback(
+                        f"[*] 提交后页面 step={step} path={info.get('path') or cur} "
+                        f"hint={hint[:140]}"
+                    )
+                    last_hint = hint
+                if "/sign-in" in cur.lower() or "grok.com" in cur.lower():
+                    return {"given_name": given_name, "family_name": family_name, "password": password}
+                if step in ("existing-account",):
+                    return {"given_name": given_name, "family_name": family_name, "password": password}
+                low = hint.lower()
+                if "must provide" in low or "you must" in low or "is required" in low:
+                    if log_callback:
+                        log_callback("[!] 资料校验失败（姓名/密码未进 React 状态），改用原生键盘重填")
+                    form_filled_once = False
+                    last_state = "validation-empty"
+                    break
+                if any(
+                    k in low
+                    for k in (
+                        "already exists",
+                        "existing account",
+                        "invalid code",
+                        "something went wrong",
+                        "try again",
+                        "unable to",
+                    )
+                ):
+                    if log_callback:
+                        log_callback(f"[!] 建号接口回报错: {hint[:160]}")
+                    return {"given_name": given_name, "family_name": family_name, "password": password}
+                sleep_with_cancel(0.5, cancel_callback)
+            else:
+                return {"given_name": given_name, "family_name": family_name, "password": password}
+            continue
         wait_cf_since = None
         if isinstance(submit_state, str) and submit_state.startswith("no-submit-button") and log_callback:
             last_state = str(submit_state)
@@ -1865,19 +2155,18 @@ def wait_for_sso_cookie(
     hold 3s + 总超时 10s 就硬跳 grok.com → 只有匿名 cookie → sso_timeout。
 
     策略（短超时 + 主动推进，不硬等）：
-      1) accounts 上短 hold 轮询 cookie（约 5s）
-      2) 落到 sign-in 立刻用 email+password 自动登录（优先于硬跳 grok）
+      1) 若还在 /sign-up：加长 hold，让 createAccount 跑完，禁止硬跳 sign-in
+      2) 落到 sign-in 用 email+password 自动登录（先邮箱再密码）
       3) 仍无 sso 再轻量跳 accounts?redirect=grok-com / grok（最多 1 次）
     """
-    # 环境可覆盖：SSO_WAIT_TIMEOUT=30
+    # 环境可覆盖：SSO_WAIT_TIMEOUT=45
     env_timeout = 0
     try:
         env_timeout = int(os.environ.get("SSO_WAIT_TIMEOUT", "0") or "0")
     except Exception:
         env_timeout = 0
-    base_timeout = env_timeout or int(timeout or 20)
-    # 比原 10s 略长一点即可；下限 15，避免又被压回 10
-    deadline = time.time() + max(base_timeout, 15)
+    base_timeout = env_timeout or int(timeout or 35)
+    deadline = time.time() + max(base_timeout, 30)
     started = time.time()
     last_seen_names = set()
     last_submit_retry = 0.0
@@ -1893,11 +2182,11 @@ def wait_for_sso_cookie(
     final_no_submit_state = ""
     final_no_submit_since = None
     final_no_submit_timeout = 8
-    # 短 hold：给 Set-Cookie 留窗口；过早硬跳 grok 会打断登录链
-    accounts_hold_seconds = 5
-    grok_nudge_min_elapsed = 8
+    # 短 hold：给 Set-Cookie 留窗口；过早硬跳 grok/sign-in 会打断建号
+    accounts_hold_seconds = 12
+    grok_nudge_min_elapsed = 22
     max_grok_nudges = 1
-    max_signin_attempts = 2
+    max_signin_attempts = 4
     email_s = str(email or "").strip()
     password_s = str(password or "").strip()
 
@@ -2004,6 +2293,43 @@ return true;
                 f"（第 {signin_attempt_count}/{max_signin_attempts} 次）..."
             )
 
+        # 登录常是两步：先邮箱 Continue，再出密码框。
+        def _signin_fields():
+            try:
+                return page.run_js(
+                    r"""
+function isVisible(node) {
+  if (!node) return false;
+  const style = window.getComputedStyle(node);
+  if (style.display === 'none' || style.visibility === 'hidden' || style.opacity === '0') return false;
+  const rect = node.getBoundingClientRect();
+  return rect.width > 0 && rect.height > 0;
+}
+const emailInput = Array.from(document.querySelectorAll(
+  'input[type="email"], input[name="email"], input[autocomplete="email"], input[autocomplete="username"], input[data-testid*="email" i]'
+)).find(isVisible) || null;
+const pwdInput = Array.from(document.querySelectorAll(
+  'input[type="password"], input[name="password"], input[autocomplete="current-password"]'
+)).find((n) => {
+  if (!isVisible(n)) return false;
+  const ac = String(n.getAttribute('autocomplete') || '').toLowerCase();
+  return !ac.includes('new-password');
+}) || null;
+return { hasEmail: !!emailInput, hasPwd: !!pwdInput };
+                    """
+                ) or {}
+            except Exception:
+                return {}
+
+        fields = _signin_fields()
+        if not isinstance(fields, dict):
+            fields = {}
+        if log_callback:
+            log_callback(
+                f"[*] 登录表单 hasEmail={bool(fields.get('hasEmail'))} "
+                f"hasPwd={bool(fields.get('hasPwd'))}"
+            )
+
         # 1) 原生优先（真实键盘事件）
         filled_email = False
         filled_pwd = False
@@ -2016,7 +2342,7 @@ return true;
                 filled_pwd = _native_type_element(pwd_cands[0], password_s)
         except Exception as fill_exc:
             if log_callback:
-                log_callback(f"[Debug] 原生填登录表单失败: {fill_exc}")
+                log_callback(f"[!] 原生填登录表单失败: {fill_exc}")
 
         # 2) JS 兜底（React controlled inputs）
         if not (filled_email and filled_pwd):
@@ -2069,9 +2395,29 @@ return { okEmail, okPwd, hasEmail: !!emailInput, hasPwd: !!pwdInput };
                 if log_callback:
                     log_callback(f"[Debug] JS 填登录表单失败: {js_exc}")
 
+        # 只有邮箱、还没有密码框：先点 Continue 进入下一步
+        if filled_email and not filled_pwd and not fields.get("hasPwd"):
+            clicked_next = _native_click_action(
+                ("继续", "下一步", "continue", "next", "sign in", "登录"),
+                deny_keywords=("sign up", "注册", "google", "apple", "github"),
+            )
+            if log_callback:
+                log_callback(f"[*] 登录页仅有邮箱，先点继续: {clicked_next or 'no-button'}")
+            for _ in range(8):
+                sleep_with_cancel(0.35, cancel_callback)
+                fields = _signin_fields()
+                if isinstance(fields, dict) and fields.get("hasPwd"):
+                    break
+            try:
+                pwd_cands = _native_input_candidates("password")
+                if pwd_cands:
+                    filled_pwd = _native_type_element(pwd_cands[0], password_s)
+            except Exception:
+                filled_pwd = False
+
         if not filled_pwd:
             if log_callback:
-                log_callback("[Debug] 自动登录：密码未写入，跳过提交")
+                log_callback("[!] 自动登录：密码未写入，跳过提交")
             return ""
 
         # 3) 点登录 / 继续
@@ -2336,6 +2682,16 @@ return true;
                             if log_callback:
                                 log_callback("[*] 已获取到 sso cookie")
                             return sso_val
+                still_signup = ("/sign-up" in cur_url.lower()) and not on_sign_in
+                if still_signup:
+                    # 建号请求可能还在飞，禁止硬跳 sign-in
+                    if now - last_submit_retry >= 3:
+                        last_submit_retry = now
+                        if log_callback:
+                            log_callback("[*] 仍在 sign-up，重试点击提交，不跳转 sign-in...")
+                        _click_continue_if_any(strict=False)
+                    sleep_with_cancel(0.5, cancel_callback)
+                    continue
                 if (
                     grok_nudge_count < max_grok_nudges
                     and elapsed >= grok_nudge_min_elapsed
