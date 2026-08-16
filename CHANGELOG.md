@@ -2,18 +2,19 @@
 
 ## Unreleased
 
+## 0.4.4 - 2026-08-16
+
 ### Added
 
 - Persist owner-only batch traffic history and show rolling average traffic per batch and per successful account in the live panel.
 - Add an SSO risk panel and CLI that check `botFlagSource` / `policy=deny` from existing SSO cookies without exchanging tokens; panel exports contain redacted state only, while reusable clean SSO remains host-local.
-
-## 0.4.3 - 2026-08-15
+- Pin Camoufox/Playwright to system Node 22 plus an EPIPE socket guard so a dead browser pipe no longer kills the whole batch.
+- Default browser fingerprints to Windows (UA / WebGL / Segoe) even when the host is Linux Xvfb.
 
 ### Fixed
 
-- Recognize SpaceXAI numeric confirmation codes (`427-599`) in Outlook RT and other mail providers without treating CSS tokens such as `per-100` as OTPs.
-- Wait for Cloudflare on the profile step before filling name/password, then type with native keyboard events so React Hook Form accepts the values.
-- Keep the signup tab alive after submit instead of jumping to `/sign-in` and aborting `createAccount`; recover two-step email-then-password login when a session lands on sign-in.
+- After x.ai shows the Next.js “error loading this page” overlay, keep waiting for the SSO redirect instead of hard-reloading `/sign-up` (that reload was aborting createAccount).
+- Treat Playwright `EPIPE` / `TargetClosed` as a retryable browser failure and rotate the sticky exit.
 
 ## 0.4.2 - 2026-08-11
 

@@ -106,6 +106,12 @@ def start_batch(count: int):
     best_effort_fchmod(fd, 0o600)
     fout = os.fdopen(fd, "w", encoding="utf-8")
     try:
+        env = dict(os.environ)
+        env["PYTHONUNBUFFERED"] = "1"
+        wrapper = ROOT / "scripts" / "playwright-node"
+        if wrapper.is_file():
+            env["PLAYWRIGHT_NODEJS_PATH"] = str(wrapper)
+        env.setdefault("GROK_PLAYWRIGHT_NODE", "/usr/bin/node")
         proc = subprocess.Popen(
             batch_launch_command(
                 ROOT,
@@ -116,6 +122,7 @@ def start_batch(count: int):
             cwd=str(ROOT),
             stdout=fout,
             stderr=subprocess.STDOUT,
+            env=env,
             **popen_group_kwargs(),
         )
     finally:
@@ -249,6 +256,8 @@ def analyze_risks_and_expand(logpath: Path) -> list:
         ok_as[a] += 1
 
     log(f"analyze risk_ips={risk_ips} risk_as={dict(risk_as)} ok_as={dict(ok_as)}")
+    log("analyze skip ASN ban (rotate IP every 3 successes instead)")
+    return []
     for asn, nbad in risk_as.most_common():
         if asn in blocked:
             continue

@@ -26,6 +26,34 @@ from browser_session import (
 
 SIGNUP_URL = "https://accounts.x.ai/sign-up?redirect=grok-com"
 
+
+def _hint_is_page_error(hint: str) -> bool:
+    """x.ai Next 崩溃页：An error occurred / error loading this page。"""
+    low = str(hint or "").lower()
+    return (
+        "error loading this page" in low
+        or ("an error occurred" in low and "correct url" in low)
+        or "contact a team admin" in low
+    )
+
+
+def _reload_signup(log_callback=None, reason: str = "页面错误") -> bool:
+    refresh_active_page()
+    if log_callback:
+        log_callback(f"[*] {reason}，重新打开 sign-up ...")
+    try:
+        page.get(SIGNUP_URL)
+        try:
+            page.wait.doc_loaded()
+        except Exception:
+            pass
+        time.sleep(0.8)
+        return True
+    except Exception as exc:
+        if log_callback:
+            log_callback(f"[Debug] 重开 sign-up 失败: {exc}")
+        return False
+
 # 资料页 Cloudflare Turnstile：等待自动通过 + 智能点击，不调用 reset()
 CF_FIRST_RETRY_AFTER = 3.0   # 检测到 CF 后 3 秒即开始尝试
 CF_RETRY_INTERVAL = 8.0      # 两次完整 getTurnstileToken 间隔（原 15s 过慢）
@@ -284,8 +312,12 @@ const buttons = Array.from(document.querySelectorAll('button, [role="button"], i
   .map((n) => String(n.innerText || n.value || n.getAttribute('aria-label') || '').replace(/\s+/g, ' ').trim())
   .filter(Boolean)
   .slice(0, 8);
+const pageErr = /error loading this page|contact a team admin/i.test(low)
+  || (/an error occurred/i.test(low) && /correct url/i.test(low))
+  || /an error occurred/i.test(title);
 let step = 'unknown';
-if (cfChall) step = 'wait-cf';
+if (pageErr) step = 'page-error';
+else if (cfChall) step = 'wait-cf';
 else if (given && family && password) step = 'profile';
 else if (existing) step = 'existing-account';
 else if (cf && !given) step = 'wait-cf';
@@ -2102,6 +2134,16 @@ btn.focus(); btn.click(); return 'submitted';
                     return {"given_name": given_name, "family_name": family_name, "password": password}
                 if step in ("existing-account",):
                     return {"given_name": given_name, "family_name": family_name, "password": password}
+                if step == "page-error" or _hint_is_page_error(hint):
+                    # Next 崩溃遮罩经常叠在 createAccount 成功之后。
+                    # 硬跳 sign-up 会掐断跳转 / 清会话，SSO 必超时。
+                    if log_callback:
+                        log_callback("[!] 提交后 x.ai 报页面错误，不刷新，继续等跳转/sso")
+                    return {
+                        "given_name": given_name,
+                        "family_name": family_name,
+                        "password": password,
+                    }
                 low = hint.lower()
                 if "must provide" in low or "you must" in low or "is required" in low:
                     if log_callback:
@@ -2118,6 +2160,8 @@ btn.focus(); btn.click(); return 'submitted';
                         "something went wrong",
                         "try again",
                         "unable to",
+                        "an error occurred",
+                        "error loading this page",
                     )
                 ):
                     if log_callback:
@@ -2684,6 +2728,25 @@ return true;
                             return sso_val
                 still_signup = ("/sign-up" in cur_url.lower()) and not on_sign_in
                 if still_signup:
+                    info = _probe_signup_page()
+                    step = str(info.get("step") or "")
+                    hint = str(info.get("hint") or "")
+                    if step == "page-error" or _hint_is_page_error(hint):
+                        # 遮罩页上点提交/整页重开都会打断登录链；只等跳转或稍后再试登录。
+                        if now - last_submit_retry >= 6:
+                            last_submit_retry = now
+                            if log_callback:
+                                log_callback("[!] sign-up 仍是错误遮罩，不刷新，继续等 sso")
+                            if email_s and password_s:
+                                sso_val = _try_sign_in_with_credentials(
+                                    "错误遮罩后改走登录"
+                                )
+                                if sso_val:
+                                    if log_callback:
+                                        log_callback("[*] 已获取到 sso cookie")
+                                    return sso_val
+                        sleep_with_cancel(0.5, cancel_callback)
+                        continue
                     # 建号请求可能还在飞，禁止硬跳 sign-in
                     if now - last_submit_retry >= 3:
                         last_submit_retry = now

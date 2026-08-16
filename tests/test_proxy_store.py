@@ -130,6 +130,61 @@ def test_probe_result_and_runtime_cooldown_control_worker_selection():
         assert item["risk_count"] == 1
 
 
+def test_home_proxy_risk_stays_usable_and_cannot_disable():
+    with IsolatedStore():
+        imported = proxy_store.import_proxies("http://127.0.0.1:8003")
+        proxy_id = imported["imported_ids"][0]
+        proxy_store._apply_probe_result(
+            proxy_id,
+            {
+                "ok": True,
+                "exit_ip": "198.51.100.33",
+                "asn": 64500,
+                "asn_org": "Home",
+                "latency_ms": 100,
+                "checked_at": "2026-08-15T00:00:00Z",
+            },
+        )
+        url = proxy_store.list_worker_proxies()[0]
+        assert proxy_store.is_home_proxy(url)
+        assert proxy_store.record_proxy_result(url, "risk", "botFlagSource=1")
+        public = proxy_store.read_proxy_pool()["items"][0]
+        assert public["stored_status"] != "cooldown"
+        assert public["cooldown_reason"] == ""
+        assert public["risk_count"] == 1
+        assert url in proxy_store.list_worker_proxies()
+        try:
+            proxy_store.update_proxy(proxy_id, enabled=False)
+        except proxy_store.ProxyValidationError as exc:
+            assert "家宽" in str(exc)
+        else:
+            raise AssertionError("home proxies must stay enabled")
+        restored = proxy_store.restore_home_proxies()
+        assert restored["ok"] is True
+
+
+def test_1024_ports_never_enter_worker_pool():
+    with IsolatedStore():
+        imported = proxy_store.import_proxies(
+            "http://127.0.0.1:7902\nhttp://127.0.0.1:8003"
+        )
+        for item in imported["items"]:
+            proxy_store._apply_probe_result(
+                item["id"],
+                {
+                    "ok": True,
+                    "exit_ip": "198.51.100.20",
+                    "asn": 64500,
+                    "asn_org": "Test",
+                    "latency_ms": 50,
+                    "checked_at": "2026-08-16T00:00:00Z",
+                },
+            )
+        urls = proxy_store.list_worker_proxies()
+        assert any(u.endswith(":8003") for u in urls)
+        assert not any(":7902" in u for u in urls)
+
+
 def test_xai_probe_uses_registration_page_result():
     calls = []
 
@@ -227,4 +282,6 @@ if __name__ == "__main__":
     test_xai_probe_uses_registration_page_result()
     test_disable_delete_and_legacy_import()
     test_async_probe_job_persists_health()
+    test_home_proxy_risk_stays_usable_and_cannot_disable()
+    test_1024_ports_never_enter_worker_pool()
     print("OK proxy store")
