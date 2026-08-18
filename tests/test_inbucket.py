@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 from __future__ import annotations
 
+import random
 import sys
 from pathlib import Path
 
@@ -45,6 +46,70 @@ def test_create_address_requires_domain():
 
     address, mailbox = inbucket.create_address("Mail.Example.com", username="James.Smith9x")
     assert address == "james.smith9x@mail.example.com"
+    assert mailbox == address
+
+
+def test_parse_domains_and_levels():
+    assert inbucket.parse_domains("mail.example.com, box.example.net") == [
+        "mail.example.com",
+        "box.example.net",
+    ]
+    assert inbucket.parse_domains("@Mail.Example.com，box.example.net extra.example") == [
+        "mail.example.com",
+        "box.example.net",
+        "extra.example",
+    ]
+    assert inbucket.parse_domains("") == []
+
+    assert inbucket.parse_levels("0") == (0, 0)
+    assert inbucket.parse_levels("2") == (2, 2)
+    assert inbucket.parse_levels("1-3") == (1, 3)
+    assert inbucket.parse_levels("3-1") == (1, 3)
+    assert inbucket.parse_levels("") == (0, 0)
+    assert inbucket.parse_levels("not-a-number") == (0, 0)
+    assert inbucket.parse_levels(99) == (4, 4)
+
+
+def test_random_email_domain_rotation_and_levels():
+    inbucket.reset_runtime_state()
+    roots = "one.example, two.example"
+
+    # 级数 0：根域名轮询均摊
+    assert inbucket.random_email_domain(roots, "0") == "one.example"
+    assert inbucket.random_email_domain(roots, "0") == "two.example"
+    assert inbucket.random_email_domain(roots, "0") == "one.example"
+
+    # 固定级数：根域名之上恰好多 N 级标签
+    domain = inbucket.random_email_domain("one.example", "2")
+    labels = domain.split(".")
+    assert domain.endswith(".one.example")
+    assert len(labels) == 2 + 2
+    assert all(label for label in labels[:2])
+
+    # 区间级数：每次都在 [low, high] 内
+    for _ in range(30):
+        domain = inbucket.random_email_domain("one.example", "1-3")
+        extra = len(domain.split(".")) - 2
+        assert 1 <= extra <= 3
+
+    # 根域名带子域前缀（如 a.b.example）时级数叠加在其上
+    domain = inbucket.random_email_domain("sub.one.example", "1")
+    assert domain.endswith(".sub.one.example")
+
+
+def test_create_address_uses_random_levels():
+    inbucket.reset_runtime_state()
+    random.seed(1234)
+    try:
+        address, mailbox = inbucket.create_address(
+            "one.example, two.example", username="tester", random_levels="2"
+        )
+    finally:
+        random.seed()
+    local, _, domain = address.partition("@")
+    assert local == "tester"
+    assert domain.endswith(".one.example") or domain.endswith(".two.example")
+    assert len(domain.split(".")) == 4
     assert mailbox == address
 
 
@@ -198,7 +263,10 @@ def test_connectivity_probe():
 
 if __name__ == "__main__":
     test_normalize_base()
+    test_parse_domains_and_levels()
+    test_random_email_domain_rotation_and_levels()
     test_create_address_requires_domain()
+    test_create_address_uses_random_levels()
     test_wait_for_code_detail_body_and_cleanup()
     test_wait_for_code_subject_short_circuit()
     test_wait_for_code_timeout_purges()

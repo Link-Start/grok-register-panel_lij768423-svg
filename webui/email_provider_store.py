@@ -188,9 +188,21 @@ FIELD_DEFINITIONS = {
         "placeholder": "http://127.0.0.1:9000",
     },
     "inbucket_domain": {
-        "label": "收信域名",
-        "type": "domain",
-        "placeholder": "mail.example.com",
+        "label": "收信根域名（可多个）",
+        "type": "text",
+        "placeholder": "mail.example.com, box.example.net",
+    },
+    "inbucket_random_levels": {
+        "label": "随机子域级数",
+        "type": "select",
+        "default": "0",
+        "options": [
+            {"value": "0", "label": "关闭（使用根域名）"},
+            {"value": "1", "label": "随机 1 级子域"},
+            {"value": "2", "label": "随机 2 级子域"},
+            {"value": "1-2", "label": "随机 1-2 级子域"},
+            {"value": "1-3", "label": "随机 1-3 级子域"},
+        ],
     },
 }
 
@@ -227,7 +239,7 @@ PROVIDER_FIELDS = {
         "outlook_rt_used_path",
         "outlook_rt_client_id",
     ),
-    "inbucket": ("inbucket_api_base", "inbucket_domain"),
+    "inbucket": ("inbucket_api_base", "inbucket_domain", "inbucket_random_levels"),
 }
 
 SECRET_FIELDS = {
@@ -323,7 +335,7 @@ def _normalize_value(name: str, value: object):
             return normalize_domain(text)
         except EmailDomainValidationError as exc:
             raise EmailProviderConfigError(str(exc)) from exc
-    if name == "defaultDomains":
+    if name in {"defaultDomains", "inbucket_domain"}:
         return _normalize_domains(value)
     if field_type == "email":
         text = _string(value)

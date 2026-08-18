@@ -252,10 +252,10 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
             base = inbucket_provider.normalize_base(
                 str(config.get("inbucket_api_base") or "")
             )
-            domain = str(config.get("inbucket_domain") or "").strip().lstrip("@")
+            domains = inbucket_provider.parse_domains(config.get("inbucket_domain"))
             if not base:
                 return "邮箱API", False, "未配置 inbucket_api_base"
-            if not domain:
+            if not domains:
                 return "邮箱API", False, "未配置 inbucket_domain"
             # GET 邮箱列表无副作用：不存在即返回空数组
             resp = http_get(
@@ -270,7 +270,7 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                 return "邮箱API", False, "Inbucket API 404：请检查实例地址与 base path"
             if resp.status_code >= 400:
                 return "邮箱API", False, f"Inbucket HTTP {resp.status_code}"
-            return "邮箱API", True, f"Inbucket 可达 HTTP {resp.status_code}（域名 {domain}）"
+            return "邮箱API", True, f"Inbucket 可达 HTTP {resp.status_code}（域名 {','.join(domains)[:80]}）"
 
         if provider == "outlook_rt":
             from email_providers import outlook_rt as outlook_rt_provider

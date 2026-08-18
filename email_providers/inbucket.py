@@ -8,7 +8,10 @@ REST API 为 GET/DELETE /api/v1/mailbox/{name}，{name} 传完整
 
 from __future__ import annotations
 
+import random
 import re
+import string
+import threading
 import time
 from typing import Any, Callable, List, Optional, Tuple
 from urllib.parse import quote, urlparse
@@ -17,6 +20,19 @@ from email_providers.common import extract_verification_code, generate_username
 
 HttpGet = Callable[..., Any]
 HttpDelete = Callable[..., Any]
+
+# 随机子域最多叠加的标签数，防止手改配置写出超长域名
+MAX_RANDOM_LEVELS = 4
+
+_domain_index = 0
+_domain_lock = threading.Lock()
+
+
+def reset_runtime_state() -> None:
+    """测试用：重置根域名轮换游标。"""
+    global _domain_index
+    with _domain_lock:
+        _domain_index = 0
 
 
 def normalize_base(base_url: str = "") -> str:
@@ -51,11 +67,75 @@ def _raise_http(resp, action: str) -> None:
     raise Exception(f"Inbucket {action}失败 HTTP {status}: {detail or 'unknown'}")
 
 
-def create_address(domain: str, username: str = "") -> Tuple[str, str]:
-    """Inbucket 无需建号 API：本地生成地址（域名需指向实例收信）。"""
-    chosen = str(domain or "").strip().lstrip("@").lower()
-    if not chosen:
+def parse_domains(raw: object) -> List[str]:
+    """解析逗号/空白分隔的多个收信根域名。"""
+    parts = re.split(r"[,，\s]+", str(raw or "").strip())
+    seen: set[str] = set()
+    domains = []
+    for part in parts:
+        domain = part.strip().lstrip("@").lower().rstrip(".")
+        if domain and domain not in seen:
+            seen.add(domain)
+            domains.append(domain)
+    return domains
+
+
+def parse_levels(spec: object) -> Tuple[int, int]:
+    """解析随机子域级数：'0'→(0,0)；'2'→(2,2)；'1-3'→(1,3)。
+
+    非法值退回 (0,0)，上限 MAX_RANDOM_LEVELS。
+    """
+    text = str(spec or "0").strip()
+    match = re.fullmatch(r"(\d+)\s*-\s*(\d+)", text)
+    if match:
+        low, high = int(match.group(1)), int(match.group(2))
+    else:
+        try:
+            low = high = int(text)
+        except ValueError:
+            return 0, 0
+    if high < low:
+        low, high = high, low
+    low = max(0, min(low, MAX_RANDOM_LEVELS))
+    high = max(0, min(high, MAX_RANDOM_LEVELS))
+    return low, high
+
+
+def _random_label() -> str:
+    """一级随机子域标签：短随机串，偶尔带邮箱词汇更像真实域名。"""
+    label = "".join(random.choices(string.ascii_lowercase + string.digits, k=random.randint(6, 10)))
+    if random.random() < 0.35:
+        word = random.choice([
+            "mail", "inbox", "box", "get", "app", "go", "my", "use", "fast", "safe",
+            "home", "note", "post", "send", "hub", "net", "lab", "pro",
+        ])
+        label = f"{word}{random.randint(10, 99)}"
+    return label
+
+
+def random_email_domain(raw_roots: object, levels: object = "0") -> str:
+    """轮换选一个根域名，并按级数设置叠加随机子域标签。
+
+    多根域名轮询均摊；随机级数需要泛解析（*.root 的 MX 指向实例）。
+    """
+    roots = parse_domains(raw_roots)
+    if not roots:
         raise Exception("Inbucket 收信域名未配置（inbucket_domain）")
+    global _domain_index
+    with _domain_lock:
+        root = roots[_domain_index % len(roots)]
+        _domain_index += 1
+    low, high = parse_levels(levels)
+    count = random.randint(low, high) if high > low else low
+    domain = root
+    for _ in range(count):
+        domain = f"{_random_label()}.{domain}"
+    return domain
+
+
+def create_address(domain: str, username: str = "", random_levels: object = "0") -> Tuple[str, str]:
+    """Inbucket 无需建号 API：本地生成地址（域名需指向实例收信）。"""
+    chosen = random_email_domain(domain, random_levels)
     address = f"{(username or generate_username(10)).strip().lower()}@{chosen}"
     return address, address
 

@@ -237,9 +237,10 @@ DEFAULT_CONFIG = {
     "moemail_api_key": "",
     "moemail_domain": "",
     "moemail_expiry_ms": moemail_provider.DEFAULT_EXPIRY_MS,
-    # Inbucket：自建实例根 URL + 收信域名（域名 MX 需指向实例）
+    # Inbucket：自建实例根 URL + 收信根域名（可逗号分隔多个）+ 随机子域级数
     "inbucket_api_base": "",
     "inbucket_domain": "",
+    "inbucket_random_levels": "0",
     # Outlook MSA refresh_token 库存（jsonl: email + refresh_token）
     "outlook_rt_inventory": "",
     "outlook_rt_used_path": "",
@@ -1738,12 +1739,17 @@ def get_inbucket_api_base():
 
 
 def get_inbucket_domain():
-    return str(config.get("inbucket_domain", "") or "").strip().lstrip("@").lower()
+    return str(config.get("inbucket_domain", "") or "").strip()
+
+
+def get_inbucket_random_levels():
+    return str(config.get("inbucket_random_levels", "0") or "0").strip()
 
 
 def inbucket_get_email_and_token(domain=""):
     address, mailbox = inbucket_provider.create_address(
-        str(domain or "").strip() or get_inbucket_domain()
+        str(domain or "").strip() or get_inbucket_domain(),
+        random_levels=get_inbucket_random_levels(),
     )
     print(f"[*] 已生成 Inbucket 邮箱: {address}")
     return address, mailbox

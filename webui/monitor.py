@@ -2128,7 +2128,7 @@ HTML = r"""<!DOCTYPE html>
           </details>
           <details class="faq-item" data-faq-item data-search="邮箱服务 provider cloudflare duckmail yyds mailnest cloudmail moemail outlook_rt inbucket 自建 jsonl refresh_token api 测试 域名轮换">
             <summary>如何配置邮箱服务</summary>
-            <div class="faq-answer">打开顶部“邮箱服务”，选择当前使用的服务商后填写对应 API 配置，保存并测试连通性。Outlook RT 库存模式填写 jsonl（email + refresh_token）路径即可，无需 client_id。Inbucket 自建模式填写实例地址和收信域名（域名 MX 需指向该实例）。自有域名轮换位于同页高级设置；只有 xAI 明确拒绝域名才累计，邮箱 API 和验证码异常不会处罚域名。</div>
+            <div class="faq-answer">打开顶部“邮箱服务”，选择当前使用的服务商后填写对应 API 配置，保存并测试连通性。Outlook RT 库存模式填写 jsonl（email + refresh_token）路径即可，无需 client_id。Inbucket 自建模式填写实例地址和收信根域名（可逗号分隔多个轮换，MX 需指向实例），随机子域级数可选（需泛解析收信）。自有域名轮换位于同页高级设置；只有 xAI 明确拒绝域名才累计，邮箱 API 和验证码异常不会处罚域名。</div>
           </details>
           <details class="faq-item" data-faq-item data-search="黑名单 asn 清除 重置 baseline 风控 出口">
             <summary>黑名单有什么作用，可以清除吗</summary>
