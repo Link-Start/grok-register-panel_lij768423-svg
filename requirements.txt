@@ -3,6 +3,7 @@ curl_cffi==0.13.0
 camoufox[geoip]==0.5.4
 playwright==1.60.0
 requests==2.34.2
+PySocks==1.7.1
 psutil==7.2.2
 
 tzdata>=2024.1

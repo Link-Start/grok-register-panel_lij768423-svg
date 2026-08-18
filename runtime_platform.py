@@ -166,3 +166,99 @@ def popen_group_kwargs(*, platform_name: str | None = None) -> dict:
             "creationflags": int(getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)),
         }
     return {"start_new_session": True}
+
+
+def _project_root() -> Path:
+    return Path(__file__).resolve().parent
+
+
+def _is_executable_file(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    if _platform_name().startswith("win"):
+        return path.suffix.lower() in {".exe", ".cmd", ".bat"} or path.suffix == ""
+    return os.access(path, os.X_OK)
+
+
+def _playwright_bundled_node(*, platform_name: str | None = None) -> Path | None:
+    try:
+        import playwright  # type: ignore
+    except Exception:
+        return None
+    driver = Path(playwright.__file__).resolve().parent / "driver"
+    name = "node.exe" if _platform_name(platform_name).startswith("win") else "node"
+    candidate = driver / name
+    return candidate if candidate.is_file() else None
+
+
+def resolve_playwright_node(
+    *,
+    platform_name: str | None = None,
+    environ: Mapping[str, str] | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> Path | None:
+    """Return a Node binary Playwright can spawn. Never a POSIX shell wrapper on Windows."""
+    env = os.environ if environ is None else environ
+    platform = _platform_name(platform_name)
+    configured = str(env.get("GROK_PLAYWRIGHT_NODE", "") or "").strip()
+    if configured:
+        path = Path(configured).expanduser()
+        if path.is_file():
+            return path
+    current = str(env.get("PLAYWRIGHT_NODEJS_PATH", "") or "").strip()
+    if current:
+        path = Path(current).expanduser()
+        # Ignore the POSIX bash wrapper when running on Windows.
+        if path.is_file() and not (
+            platform.startswith("win") and path.name == "playwright-node" and path.suffix == ""
+        ):
+            return path
+    if platform.startswith("win"):
+        found = which("node.exe") or which("node")
+        if found:
+            return Path(found)
+        bundled = _playwright_bundled_node(platform_name=platform)
+        return bundled
+    wrapper = _project_root() / "scripts" / "playwright-node"
+    if wrapper.is_file():
+        return wrapper
+    found = which("node")
+    if found:
+        return Path(found)
+    for cand in ("/usr/bin/node", "/usr/local/bin/node"):
+        path = Path(cand)
+        if path.is_file():
+            return path
+    return _playwright_bundled_node(platform_name=platform)
+
+
+def apply_playwright_node_env(
+    environ: dict[str, str] | None = None,
+    *,
+    platform_name: str | None = None,
+    which: Callable[[str], str | None] = shutil.which,
+) -> dict[str, str]:
+    """Pin Playwright's Node and the EPIPE guard. Safe to call before importing Playwright."""
+    env = os.environ if environ is None else environ
+    platform = _platform_name(platform_name)
+    guard = _project_root() / "scripts" / "playwright-epipe-guard.js"
+    node = resolve_playwright_node(
+        platform_name=platform,
+        environ=env,
+        which=which,
+    )
+    if node is not None:
+        env["PLAYWRIGHT_NODEJS_PATH"] = str(node)
+        env.setdefault("GROK_PLAYWRIGHT_NODE", str(node))
+        if platform.startswith("win") and guard.is_file():
+            marker = str(guard)
+            existing = str(env.get("NODE_OPTIONS") or "")
+            extra = f"--require {marker}"
+            if marker not in existing:
+                env["NODE_OPTIONS"] = f"{existing} {extra}".strip()
+    elif not platform.startswith("win"):
+        wrapper = _project_root() / "scripts" / "playwright-node"
+        if wrapper.is_file():
+            env["PLAYWRIGHT_NODEJS_PATH"] = str(wrapper)
+            env.setdefault("GROK_PLAYWRIGHT_NODE", "/usr/bin/node")
+    return env

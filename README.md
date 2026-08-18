@@ -99,7 +99,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 |------|----------|----------------|
 | Linux | 正式支持 | 有显示会话时直启；无显示时面板自动调用 `xvfb-run` |
 | macOS | 正式支持 | 直接使用本机显示会话，不依赖 Xvfb |
-| Windows | 实验性 | 已兼容虚拟环境路径与面板进程启停；浏览器批处理链路仍需自行验证 |
+| Windows | 正式支持 | 不依赖 Xvfb；面板直启 `.venv\Scripts\python.exe`。默认 `GROK_HEADLESS=1`（GPU 不稳时可保持；有头模式设 `GROK_HEADED=1`） |
 
 Linux 容器必须保留 procfs（通常为默认的 `/proc` 挂载），面板依赖它读取并安全停止
 当前项目的任务进程。
@@ -120,6 +120,17 @@ python -m camoufox fetch           # 必须：下载浏览器引擎（约数百 
 cp config.example.json config.json
 # 编辑 config.json：邮箱、proxy、cpa_auth_dir 等
 ```
+
+Windows 也可以一条命令完成安装，然后用本机代理 URL（http / socks5）跑批，不必 SSH 到 Linux：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
+# 编辑 config.json，或在面板导入代理池
+powershell -ExecutionPolicy Bypass -File scripts\run_windows_batch.ps1 -Count 1 -Workers 1
+powershell -ExecutionPolicy Bypass -File scripts\run_windows_panel.ps1
+```
+
+Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（那是 bash 包装）。运行时会自动选 `node.exe` 或 Playwright 自带 Node，并用 `NODE_OPTIONS` 注入 EPIPE 保护。代理请写 **Windows 本机可达** 的 URL（例如 `socks5://user:pass@gate.example:1000`），不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。
 
 > `pip install` 只装 Python 依赖；**不执行 `camoufox fetch` 无法启动浏览器**。
 

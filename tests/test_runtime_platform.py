@@ -15,9 +15,11 @@ sys.path.insert(0, str(ROOT))
 from runtime_platform import (
     RuntimePlatformError,
     _load_beijing_timezone,
+    apply_playwright_node_env,
     batch_launch_command,
     batch_runtime_error,
     popen_group_kwargs,
+    resolve_playwright_node,
     runtime_python,
 )
 
@@ -198,6 +200,42 @@ def test_invalid_xvfb_mode_is_rejected():
         raise AssertionError("invalid GROK_USE_XVFB must be rejected")
 
 
+def test_windows_playwright_node_skips_posix_wrapper():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    fake_node = ROOT / "scripts" / "node.exe"
+    env = {
+        "PLAYWRIGHT_NODEJS_PATH": str(wrapper),
+        "GROK_PLAYWRIGHT_NODE": "",
+    }
+    resolved = resolve_playwright_node(
+        platform_name="win32",
+        environ=env,
+        which=lambda name: str(fake_node) if name in {"node", "node.exe"} else None,
+    )
+    assert resolved == fake_node
+    out = apply_playwright_node_env(
+        dict(env),
+        platform_name="win32",
+        which=lambda name: str(fake_node) if name in {"node", "node.exe"} else None,
+    )
+    assert out["PLAYWRIGHT_NODEJS_PATH"] == str(fake_node)
+    assert "playwright-epipe-guard.js" in out.get("NODE_OPTIONS", "")
+    assert out["PLAYWRIGHT_NODEJS_PATH"].endswith("node.exe")
+
+
+def test_posix_playwright_node_keeps_wrapper():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    if not wrapper.is_file():
+        return
+    env = apply_playwright_node_env(
+        {},
+        platform_name="linux",
+        which=lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    assert env["PLAYWRIGHT_NODEJS_PATH"] == str(wrapper)
+    assert env.get("GROK_PLAYWRIGHT_NODE") in {"/usr/bin/node", str(wrapper)}
+
+
 def test_process_group_settings_follow_platform():
     assert popen_group_kwargs(platform_name="linux") == {"start_new_session": True}
     assert popen_group_kwargs(platform_name="darwin") == {"start_new_session": True}
@@ -232,6 +270,8 @@ if __name__ == "__main__":
     test_macos_and_windows_launch_without_xvfb()
     test_xvfb_force_is_rejected_off_linux()
     test_invalid_xvfb_mode_is_rejected()
+    test_windows_playwright_node_skips_posix_wrapper()
+    test_posix_playwright_node_keeps_wrapper()
     test_process_group_settings_follow_platform()
     test_recovery_module_can_run_from_webui_directory()
     print("OK runtime platform")
