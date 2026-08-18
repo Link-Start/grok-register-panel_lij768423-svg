@@ -36,7 +36,8 @@ python3 -m venv .venv
 - Windows supervisor 使用后台管道读取，不依赖仅支持 socket 的 `selectors`；停止任务时会递归结束 Camoufox 子进程树。
 - Windows 浏览器 Profile 位于当前用户的 `%LOCALAPPDATA%\\GrokRegister\\grok-register-camoufox`，避免仓库目录或共享临时目录泄露会话数据。
 - Windows 默认 `GROK_HEADLESS=1` + 软件渲染；需要有头窗口时设 `GROK_HEADED=1`。
-- Windows 将 Playwright Node 解析为 `node.exe` 或 Playwright 自带 Node，并通过 `NODE_OPTIONS --require scripts/playwright-epipe-guard.js` 注入 EPIPE 保护。不要把 bash 版 `scripts/playwright-node` 配进 `PLAYWRIGHT_NODEJS_PATH`。
+- POSIX：`PLAYWRIGHT_NODEJS_PATH` 指向 `scripts/playwright-node`，`GROK_PLAYWRIGHT_NODE` 必须是真实 node 二进制（禁止等于 wrapper，避免 exec 自己）。会对 wrapper 做 best-effort `chmod +x`。
+- Windows 将 Playwright Node 解析为 `node.exe` 或 Playwright 自带 Node，并通过带引号的 `NODE_OPTIONS --require "..."` 注入 EPIPE 保护。不要把 bash 版 `scripts/playwright-node` 配进 `PLAYWRIGHT_NODEJS_PATH`。
 - 代理必须是本机进程能拨通的 HTTP/SOCKS URL。Linux mixed 口（`127.0.0.1:82xx`）在 Windows 上不存在，应改用上游 `socks5://` 或在 Windows 本地再起一层客户端。
 - 安装与跑批：`scripts\\setup_windows.ps1`、`scripts\\run_windows_batch.ps1`、`scripts\\run_windows_panel.ps1`。
 

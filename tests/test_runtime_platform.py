@@ -20,6 +20,7 @@ from runtime_platform import (
     batch_runtime_error,
     popen_group_kwargs,
     resolve_playwright_node,
+    resolve_real_node_binary,
     runtime_python,
 )
 
@@ -207,33 +208,47 @@ def test_windows_playwright_node_skips_posix_wrapper():
         "PLAYWRIGHT_NODEJS_PATH": str(wrapper),
         "GROK_PLAYWRIGHT_NODE": "",
     }
+    which = lambda name: str(fake_node) if name in {"node", "node.exe"} else None
     resolved = resolve_playwright_node(
         platform_name="win32",
         environ=env,
-        which=lambda name: str(fake_node) if name in {"node", "node.exe"} else None,
+        which=which,
     )
-    assert resolved == fake_node
-    out = apply_playwright_node_env(
-        dict(env),
-        platform_name="win32",
-        which=lambda name: str(fake_node) if name in {"node", "node.exe"} else None,
-    )
+    assert resolved == str(fake_node)
+    assert resolve_real_node_binary(platform_name="win32", environ=env, which=which) == str(fake_node)
+    out = apply_playwright_node_env(dict(env), platform_name="win32", which=which)
     assert out["PLAYWRIGHT_NODEJS_PATH"] == str(fake_node)
-    assert "playwright-epipe-guard.js" in out.get("NODE_OPTIONS", "")
+    assert out["GROK_PLAYWRIGHT_NODE"] == str(fake_node)
+    assert out["GROK_PLAYWRIGHT_NODE"] != str(wrapper)
+    options = out.get("NODE_OPTIONS", "")
+    assert "playwright-epipe-guard.js" in options
+    assert "--require \"" in options
     assert out["PLAYWRIGHT_NODEJS_PATH"].endswith("node.exe")
 
 
 def test_posix_playwright_node_keeps_wrapper():
     wrapper = ROOT / "scripts" / "playwright-node"
-    if not wrapper.is_file():
-        return
+    assert wrapper.is_file(), "scripts/playwright-node is required"
     env = apply_playwright_node_env(
         {},
         platform_name="linux",
         which=lambda name: "/usr/bin/node" if name == "node" else None,
     )
     assert env["PLAYWRIGHT_NODEJS_PATH"] == str(wrapper)
-    assert env.get("GROK_PLAYWRIGHT_NODE") in {"/usr/bin/node", str(wrapper)}
+    assert env["GROK_PLAYWRIGHT_NODE"] == "/usr/bin/node"
+    assert env["GROK_PLAYWRIGHT_NODE"] != str(wrapper)
+
+
+def test_posix_rejects_wrapper_as_grok_playwright_node():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    assert wrapper.is_file(), "scripts/playwright-node is required"
+    env = apply_playwright_node_env(
+        {"GROK_PLAYWRIGHT_NODE": str(wrapper)},
+        platform_name="linux",
+        which=lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    assert env["PLAYWRIGHT_NODEJS_PATH"] == str(wrapper)
+    assert env["GROK_PLAYWRIGHT_NODE"] == "/usr/bin/node"
 
 
 def test_process_group_settings_follow_platform():
@@ -272,6 +287,7 @@ if __name__ == "__main__":
     test_invalid_xvfb_mode_is_rejected()
     test_windows_playwright_node_skips_posix_wrapper()
     test_posix_playwright_node_keeps_wrapper()
+    test_posix_rejects_wrapper_as_grok_playwright_node()
     test_process_group_settings_follow_platform()
     test_recovery_module_can_run_from_webui_directory()
     print("OK runtime platform")

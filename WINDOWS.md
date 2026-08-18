@@ -38,5 +38,5 @@ powershell -ExecutionPolicy Bypass -File scripts\run_windows_mihomo.ps1
 ## Playwright Node
 
 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 bash 版 `scripts/playwright-node`。
-运行时会解析 `node.exe` 或 Playwright 自带 Node，并用 `NODE_OPTIONS` 注入
-`scripts/playwright-epipe-guard.js`。
+运行时会解析 `node.exe` 或 Playwright 自带 Node，并用带引号的
+`NODE_OPTIONS --require "..."` 注入 `scripts/playwright-epipe-guard.js`。

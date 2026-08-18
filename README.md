@@ -99,7 +99,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 |------|----------|----------------|
 | Linux | 正式支持 | 有显示会话时直启；无显示时面板自动调用 `xvfb-run` |
 | macOS | 正式支持 | 直接使用本机显示会话，不依赖 Xvfb |
-| Windows | 正式支持 | 不依赖 Xvfb；面板直启 `.venv\Scripts\python.exe`。默认 `GROK_HEADLESS=1`（GPU 不稳时可保持；有头模式设 `GROK_HEADED=1`） |
+| Windows | 已本机验证，CI 覆盖 Node/Xvfb 解析 | 不依赖 Xvfb；面板直启 `.venv\Scripts\python.exe`。默认 `GROK_HEADLESS=1`（有头模式设 `GROK_HEADED=1`） |
 
 Linux 容器必须保留 procfs（通常为默认的 `/proc` 挂载），面板依赖它读取并安全停止
 当前项目的任务进程。
@@ -130,7 +130,7 @@ powershell -ExecutionPolicy Bypass -File scripts\run_windows_batch.ps1 -Count 1 
 powershell -ExecutionPolicy Bypass -File scripts\run_windows_panel.ps1
 ```
 
-Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（那是 bash 包装）。运行时会自动选 `node.exe` 或 Playwright 自带 Node，并用 `NODE_OPTIONS` 注入 EPIPE 保护。代理请写 **Windows 本机可达** 的 URL（例如 `socks5://user:pass@gate.example:1000`），不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。
+Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（那是 bash 包装）。运行时会解析 `node.exe` 或 Playwright 自带 Node，并用带引号的 `NODE_OPTIONS --require` 注入 EPIPE 保护。代理请写 **Windows 本机可达** 的 URL（例如 `socks5://user:pass@gate.example:1000`），不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。
 
 > `pip install` 只装 Python 依赖；**不执行 `camoufox fetch` 无法启动浏览器**。
 
