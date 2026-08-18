@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add an `inbucket` email provider for self-hosted Inbucket instances: generate addresses under a configured receive domain and poll the v1 mailbox API for the xAI verification code. Root domains accept a comma-separated rotation list, and `inbucket_random_levels` can stack 1-3 random subdomain labels per address (wildcard MX required).
+
 ## 0.4.4 - 2026-08-16
 
 ### Added
