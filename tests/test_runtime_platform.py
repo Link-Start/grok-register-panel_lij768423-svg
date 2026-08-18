@@ -107,13 +107,13 @@ def test_linux_headless_launch_uses_xvfb_automatically():
             environ={},
             which=lambda name: "/usr/bin/xvfb-run" if name == "xvfb-run" else None,
         )
-        assert command[:5] == [
+        assert command[:4] == [
             "/usr/bin/xvfb-run",
             "-a",
             "-s",
             "-screen 0 1920x1080x24",
-            str(python),
         ]
+        assert Path(command[4]).resolve() == python.resolve()
         assert command[-2:] == ["5", "2"]
 
 
@@ -137,8 +137,8 @@ def test_linux_display_and_disabled_mode_launch_directly():
             environ={"GROK_USE_XVFB": "0"},
             which=lambda _name: None,
         )
-        assert with_display[0] == str(python)
-        assert explicitly_disabled[0] == str(python)
+        assert Path(with_display[0]).resolve() == python.resolve()
+        assert Path(explicitly_disabled[0]).resolve() == python.resolve()
 
 
 def test_missing_xvfb_returns_actionable_error():
@@ -171,8 +171,8 @@ def test_macos_and_windows_launch_without_xvfb():
             environ={},
             which=lambda _name: None,
         )
-        assert mac_command[0] == str(mac_python)
-        assert windows_command[0] == str(windows_python)
+        assert Path(mac_command[0]).resolve() == mac_python.resolve()
+        assert Path(windows_command[0]).resolve() == windows_python.resolve()
         assert "xvfb-run" not in mac_command
         assert "xvfb-run" not in windows_command
 

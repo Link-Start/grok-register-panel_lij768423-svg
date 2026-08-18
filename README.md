@@ -519,7 +519,7 @@ A: 8787 被其它进程占用（例如同机其它服务）。换 `MONITOR_PORT`
 A: 旧版面板直接读取 Linux `/proc`，macOS 上必然失败；更新后面板改用 `psutil`。若新版仍在 Linux 容器中提示无法读取进程列表，说明容器没有挂载 procfs，请恢复默认 `/proc` 挂载后重启面板。不要用“忽略进程检测”绕过，否则可能重复启动任务。
 
 **Q: Windows？**  
-A: 面板已适配 `.venv\\Scripts\\python.exe`、进程发现和停止；Camoufox 浏览器批处理链路仍标为实验性。生产使用优先 Linux 或 macOS。
+A: 已本机验证，CI 覆盖 Node/Xvfb 解析。不依赖 Xvfb；用 `scripts\setup_windows.ps1` 安装，`scripts\run_windows_batch.ps1` 跑批。默认 `GROK_HEADLESS=1`。代理必须是本机可达的 HTTP/SOCKS URL，不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。详见 `WINDOWS.md`。
 
 **Q: 面板和真实进程不一致？**  
 A: 看 `log/orch100-stdout.log` 与最新 `log/batch-*.log`；欢迎提 issue / PR。
