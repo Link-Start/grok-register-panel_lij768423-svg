@@ -1,7 +1,7 @@
 # 部署指南
 
-本文以 Linux 无头服务器为主，Python 3.10+ 可用；Web 面板同时支持 macOS，
-Windows 浏览器批处理链路仍为实验性。发布版本在 Python 3.14 环境完成验证。
+本文覆盖 Linux 无头服务器、macOS 与 Windows 本机。Python 3.10+ 可用。
+发布版本在 Python 3.14（Linux）与 Python 3.12（Windows）环境完成验证。
 
 ## 1. 安装
 
@@ -32,9 +32,14 @@ python3 -m venv .venv
 - `GROK_USE_XVFB=1` 可在 Linux 强制使用 Xvfb，`GROK_USE_XVFB=0` 可明确直启；默认 `auto`。
 - 任务解释器优先使用项目 `.venv`，缺失时复用启动面板的 Python；外部共享虚拟环境可用 `GROK_PYTHON_BIN` 显式固定。
 - Linux 容器必须挂载 procfs 到 `/proc`。缺失时面板会拒绝启停任务并给出明确错误，避免在无法确认进程状态时重复启动。
-- Windows 已兼容 `.venv\\Scripts\\python.exe` 与面板进程管理，但浏览器批处理仍需在目标环境单独验证。
+- Windows 使用 `.venv\\Scripts\\python.exe` 启动面板与批处理，不调用 Xvfb。
 - Windows supervisor 使用后台管道读取，不依赖仅支持 socket 的 `selectors`；停止任务时会递归结束 Camoufox 子进程树。
 - Windows 浏览器 Profile 位于当前用户的 `%LOCALAPPDATA%\\GrokRegister\\grok-register-camoufox`，避免仓库目录或共享临时目录泄露会话数据。
+- Windows 默认 `GROK_HEADLESS=1` + 软件渲染；需要有头窗口时设 `GROK_HEADED=1`。
+- POSIX：`PLAYWRIGHT_NODEJS_PATH` 指向 `scripts/playwright-node`，`GROK_PLAYWRIGHT_NODE` 必须是真实 node 二进制（禁止等于 wrapper，避免 exec 自己）。会对 wrapper 做 best-effort `chmod +x`。
+- Windows 将 Playwright Node 解析为 `node.exe` 或 Playwright 自带 Node，并通过带引号的 `NODE_OPTIONS --require "..."` 注入 EPIPE 保护。不要把 bash 版 `scripts/playwright-node` 配进 `PLAYWRIGHT_NODEJS_PATH`。
+- 代理必须是本机进程能拨通的 HTTP/SOCKS URL。Linux mixed 口（`127.0.0.1:82xx`）在 Windows 上不存在，应改用上游 `socks5://` 或在 Windows 本地再起一层客户端。
+- 安装与跑批：`scripts\\setup_windows.ps1`、`scripts\\run_windows_batch.ps1`、`scripts\\run_windows_panel.ps1`。
 
 ## 2. 配置
 
@@ -149,6 +154,15 @@ xvfb-run -a .venv/bin/python -u run_batch_headless.py 20 3
 
 # Linux 有显示 / macOS
 .venv/bin/python -u run_batch_headless.py 20 3
+```
+
+```powershell
+# Windows（默认 headless）
+$env:GROK_HEADLESS = "1"
+$env:PYTHONUTF8 = "1"
+.\.venv\Scripts\python.exe -u run_batch_headless.py 1 1
+# 或
+powershell -ExecutionPolicy Bypass -File scripts\run_windows_batch.ps1 -Count 1 -Workers 1
 ```
 
 以下辅助脚本仅用于 Linux/Xvfb：

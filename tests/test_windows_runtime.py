@@ -21,7 +21,9 @@ def test_windows_profile_root_uses_local_app_data():
             platform_name="nt",
             environ={"LOCALAPPDATA": temp},
         )
-        assert root == Path(temp) / "GrokRegister" / "grok-register-camoufox"
+        assert root.resolve() == (
+            Path(temp) / "GrokRegister" / "grok-register-camoufox"
+        ).resolve()
         assert root.is_dir()
         if sys.platform != "win32":
             assert stat.S_IMODE(root.stat().st_mode) == 0o700

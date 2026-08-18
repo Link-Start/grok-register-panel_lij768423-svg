@@ -99,7 +99,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 |------|----------|----------------|
 | Linux | 正式支持 | 有显示会话时直启；无显示时面板自动调用 `xvfb-run` |
 | macOS | 正式支持 | 直接使用本机显示会话，不依赖 Xvfb |
-| Windows | 实验性 | 已兼容虚拟环境路径与面板进程启停；浏览器批处理链路仍需自行验证 |
+| Windows | 已本机验证，CI 覆盖 Node/Xvfb 解析 | 不依赖 Xvfb；面板直启 `.venv\Scripts\python.exe`。默认 `GROK_HEADLESS=1`（有头模式设 `GROK_HEADED=1`） |
 
 Linux 容器必须保留 procfs（通常为默认的 `/proc` 挂载），面板依赖它读取并安全停止
 当前项目的任务进程。
@@ -120,6 +120,17 @@ python -m camoufox fetch           # 必须：下载浏览器引擎（约数百 
 cp config.example.json config.json
 # 编辑 config.json：邮箱、proxy、cpa_auth_dir 等
 ```
+
+Windows 也可以一条命令完成安装，然后用本机代理 URL（http / socks5）跑批，不必 SSH 到 Linux：
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\setup_windows.ps1
+# 编辑 config.json，或在面板导入代理池
+powershell -ExecutionPolicy Bypass -File scripts\run_windows_batch.ps1 -Count 1 -Workers 1
+powershell -ExecutionPolicy Bypass -File scripts\run_windows_panel.ps1
+```
+
+Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（那是 bash 包装）。运行时会解析 `node.exe` 或 Playwright 自带 Node，并用带引号的 `NODE_OPTIONS --require` 注入 EPIPE 保护。代理请写 **Windows 本机可达** 的 URL（例如 `socks5://user:pass@gate.example:1000`），不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。
 
 > `pip install` 只装 Python 依赖；**不执行 `camoufox fetch` 无法启动浏览器**。
 
@@ -508,7 +519,7 @@ A: 8787 被其它进程占用（例如同机其它服务）。换 `MONITOR_PORT`
 A: 旧版面板直接读取 Linux `/proc`，macOS 上必然失败；更新后面板改用 `psutil`。若新版仍在 Linux 容器中提示无法读取进程列表，说明容器没有挂载 procfs，请恢复默认 `/proc` 挂载后重启面板。不要用“忽略进程检测”绕过，否则可能重复启动任务。
 
 **Q: Windows？**  
-A: 面板已适配 `.venv\\Scripts\\python.exe`、进程发现和停止；Camoufox 浏览器批处理链路仍标为实验性。生产使用优先 Linux 或 macOS。
+A: 已本机验证，CI 覆盖 Node/Xvfb 解析。不依赖 Xvfb；用 `scripts\setup_windows.ps1` 安装，`scripts\run_windows_batch.ps1` 跑批。默认 `GROK_HEADLESS=1`。代理必须是本机可达的 HTTP/SOCKS URL，不要沿用 Linux 上的 `127.0.0.1:82xx` mixed 口。详见 `WINDOWS.md`。
 
 **Q: 面板和真实进程不一致？**  
 A: 看 `log/orch100-stdout.log` 与最新 `log/batch-*.log`；欢迎提 issue / PR。

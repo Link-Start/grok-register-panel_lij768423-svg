@@ -22,6 +22,7 @@ from secure_files import atomic_write_json, best_effort_fchmod, ensure_private_d
 from batch_traffic import read_metrics as read_batch_traffic
 from batch_traffic import read_summary as read_batch_traffic_summary
 from runtime_platform import (
+    apply_playwright_node_env,
     batch_launch_command,
     batch_runtime_error,
     beijing_strftime,
@@ -692,10 +693,10 @@ def _registration_env() -> dict[str, str]:
         "GROK_STATIC_CACHE_DIR",
         str(LOG_DIR / "static-asset-cache"),
     )
-    wrapper = ROOT / "scripts" / "playwright-node"
-    if wrapper.is_file():
-        env["PLAYWRIGHT_NODEJS_PATH"] = str(wrapper)
-    env.setdefault("GROK_PLAYWRIGHT_NODE", "/usr/bin/node")
+    if os.name == "nt":
+        env.setdefault("GROK_HEADLESS", "1")
+        env.setdefault("PYTHONUTF8", "1")
+    apply_playwright_node_env(env)
     return env
 
 

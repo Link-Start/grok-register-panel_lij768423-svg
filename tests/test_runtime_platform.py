@@ -15,9 +15,12 @@ sys.path.insert(0, str(ROOT))
 from runtime_platform import (
     RuntimePlatformError,
     _load_beijing_timezone,
+    apply_playwright_node_env,
     batch_launch_command,
     batch_runtime_error,
     popen_group_kwargs,
+    resolve_playwright_node,
+    resolve_real_node_binary,
     runtime_python,
 )
 
@@ -104,13 +107,13 @@ def test_linux_headless_launch_uses_xvfb_automatically():
             environ={},
             which=lambda name: "/usr/bin/xvfb-run" if name == "xvfb-run" else None,
         )
-        assert command[:5] == [
+        assert command[:4] == [
             "/usr/bin/xvfb-run",
             "-a",
             "-s",
             "-screen 0 1920x1080x24",
-            str(python),
         ]
+        assert Path(command[4]).resolve() == python.resolve()
         assert command[-2:] == ["5", "2"]
 
 
@@ -134,8 +137,8 @@ def test_linux_display_and_disabled_mode_launch_directly():
             environ={"GROK_USE_XVFB": "0"},
             which=lambda _name: None,
         )
-        assert with_display[0] == str(python)
-        assert explicitly_disabled[0] == str(python)
+        assert Path(with_display[0]).resolve() == python.resolve()
+        assert Path(explicitly_disabled[0]).resolve() == python.resolve()
 
 
 def test_missing_xvfb_returns_actionable_error():
@@ -168,8 +171,8 @@ def test_macos_and_windows_launch_without_xvfb():
             environ={},
             which=lambda _name: None,
         )
-        assert mac_command[0] == str(mac_python)
-        assert windows_command[0] == str(windows_python)
+        assert Path(mac_command[0]).resolve() == mac_python.resolve()
+        assert Path(windows_command[0]).resolve() == windows_python.resolve()
         assert "xvfb-run" not in mac_command
         assert "xvfb-run" not in windows_command
 
@@ -196,6 +199,56 @@ def test_invalid_xvfb_mode_is_rejected():
         assert "auto、1 或 0" in str(exc)
     else:
         raise AssertionError("invalid GROK_USE_XVFB must be rejected")
+
+
+def test_windows_playwright_node_skips_posix_wrapper():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    fake_node = ROOT / "scripts" / "node.exe"
+    env = {
+        "PLAYWRIGHT_NODEJS_PATH": str(wrapper),
+        "GROK_PLAYWRIGHT_NODE": "",
+    }
+    which = lambda name: str(fake_node) if name in {"node", "node.exe"} else None
+    resolved = resolve_playwright_node(
+        platform_name="win32",
+        environ=env,
+        which=which,
+    )
+    assert resolved == str(fake_node)
+    assert resolve_real_node_binary(platform_name="win32", environ=env, which=which) == str(fake_node)
+    out = apply_playwright_node_env(dict(env), platform_name="win32", which=which)
+    assert out["PLAYWRIGHT_NODEJS_PATH"] == str(fake_node)
+    assert out["GROK_PLAYWRIGHT_NODE"] == str(fake_node)
+    assert out["GROK_PLAYWRIGHT_NODE"] != str(wrapper)
+    options = out.get("NODE_OPTIONS", "")
+    assert "playwright-epipe-guard.js" in options
+    assert "--require \"" in options
+    assert out["PLAYWRIGHT_NODEJS_PATH"].endswith("node.exe")
+
+
+def test_posix_playwright_node_keeps_wrapper():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    assert wrapper.is_file(), "scripts/playwright-node is required"
+    env = apply_playwright_node_env(
+        {},
+        platform_name="linux",
+        which=lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    assert env["PLAYWRIGHT_NODEJS_PATH"] == str(wrapper)
+    assert env["GROK_PLAYWRIGHT_NODE"] == "/usr/bin/node"
+    assert env["GROK_PLAYWRIGHT_NODE"] != str(wrapper)
+
+
+def test_posix_rejects_wrapper_as_grok_playwright_node():
+    wrapper = ROOT / "scripts" / "playwright-node"
+    assert wrapper.is_file(), "scripts/playwright-node is required"
+    env = apply_playwright_node_env(
+        {"GROK_PLAYWRIGHT_NODE": str(wrapper)},
+        platform_name="linux",
+        which=lambda name: "/usr/bin/node" if name == "node" else None,
+    )
+    assert env["PLAYWRIGHT_NODEJS_PATH"] == str(wrapper)
+    assert env["GROK_PLAYWRIGHT_NODE"] == "/usr/bin/node"
 
 
 def test_process_group_settings_follow_platform():
@@ -232,6 +285,9 @@ if __name__ == "__main__":
     test_macos_and_windows_launch_without_xvfb()
     test_xvfb_force_is_rejected_off_linux()
     test_invalid_xvfb_mode_is_rejected()
+    test_windows_playwright_node_skips_posix_wrapper()
+    test_posix_playwright_node_keeps_wrapper()
+    test_posix_rejects_wrapper_as_grok_playwright_node()
     test_process_group_settings_follow_platform()
     test_recovery_module_can_run_from_webui_directory()
     print("OK runtime platform")

@@ -77,8 +77,11 @@ xvfb-run -a .venv/bin/python -u run_batch_headless.py 20 3
 ```
 
 Linux graphical sessions and macOS run the Python entry point directly.
-Windows process management is supported, but the browser batch remains
-experimental.
+Windows runs the same Python entry point without Xvfb. Pin Playwright Node
+through `apply_playwright_node_env()`; never point `PLAYWRIGHT_NODEJS_PATH`
+at the POSIX `scripts/playwright-node` wrapper on Windows. Default Windows
+batches to `GROK_HEADLESS=1`. Proxy URLs must be reachable from the Windows
+process itself (remote HTTP/SOCKS), not Linux-only loopback mixed ports.
 
 ## Required Verification
 
