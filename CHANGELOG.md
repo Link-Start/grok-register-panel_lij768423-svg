@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Added
+
+- Add an `inbucket` email provider for self-hosted Inbucket instances: generate addresses under a configured receive domain and poll the v1 mailbox API for the xAI verification code.
+
 ## 0.4.4 - 2026-08-16
 
 ### Added

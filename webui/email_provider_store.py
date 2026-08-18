@@ -27,6 +27,7 @@ PROVIDER_LABELS = {
     "cloudmail": "CloudMail",
     "moemail": "MoeMail",
     "outlook_rt": "Outlook RT 库存",
+    "inbucket": "Inbucket",
 }
 SUPPORTED_PROVIDERS = tuple(PROVIDER_LABELS)
 
@@ -181,6 +182,16 @@ FIELD_DEFINITIONS = {
         "default": "9e5f94bc-e8a4-4e73-b8be-63364c29d753",
         "placeholder": "默认 Microsoft Authentication Broker",
     },
+    "inbucket_api_base": {
+        "label": "实例地址",
+        "type": "url",
+        "placeholder": "http://127.0.0.1:9000",
+    },
+    "inbucket_domain": {
+        "label": "收信域名",
+        "type": "domain",
+        "placeholder": "mail.example.com",
+    },
 }
 
 PROVIDER_FIELDS = {
@@ -216,6 +227,7 @@ PROVIDER_FIELDS = {
         "outlook_rt_used_path",
         "outlook_rt_client_id",
     ),
+    "inbucket": ("inbucket_api_base", "inbucket_domain"),
 }
 
 SECRET_FIELDS = {
@@ -390,6 +402,8 @@ def _is_configured(provider: str, values: dict) -> bool:
     if provider == "outlook_rt":
         inventory = str(values.get("outlook_rt_inventory") or "").strip()
         return bool(inventory and Path(inventory).expanduser().is_file())
+    if provider == "inbucket":
+        return bool(values.get("inbucket_api_base") and values.get("inbucket_domain"))
     return False
 
 
