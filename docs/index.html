@@ -32,10 +32,18 @@
       rel="stylesheet"
       href="https://fonts.googleapis.com/css2?family=Noto+Sans+SC:wght@400;500;600;700&display=swap"
     />
-    <link rel="stylesheet" href="tokens.css?v=2" />
-    <link rel="stylesheet" href="site.css?v=2" />
+    <link rel="stylesheet" href="tokens.css?v=3" />
+    <link rel="stylesheet" href="site.css?v=3" />
   </head>
   <body>
+    <canvas class="global-pixel-trail" aria-hidden="true"></canvas>
+    <div class="global-flowing-lights" aria-hidden="true">
+      <span class="global-flow-light-rail is-horizontal is-top"><span class="global-flow-light-runner"></span></span>
+      <span class="global-flow-light-rail is-horizontal is-bottom"><span class="global-flow-light-runner"></span></span>
+      <span class="global-flow-light-rail is-vertical is-left"><span class="global-flow-light-runner"></span></span>
+      <span class="global-flow-light-rail is-vertical is-right"><span class="global-flow-light-runner"></span></span>
+    </div>
+    <canvas class="click-spark-canvas" aria-hidden="true"></canvas>
     <header class="site-header">
       <div class="shell nav">
         <a class="brand" href="#top">
@@ -87,12 +95,16 @@
             Camoufox 注册机接上 Live 面板：代理池、邮箱轮换、ASN 黑名单、BFS / SSO 风控。Linux、macOS、Windows。
           </p>
           <div class="hero-actions">
-            <a class="btn btn-primary" href="https://github.com/lij768423-svg/grok-register-panel">
-              <span class="btn-label">打开 GitHub</span>
-            </a>
-            <button class="btn btn-secondary" type="button" id="copy-clone">
-              <span class="btn-label">复制 clone</span>
-            </button>
+            <span class="magnetic-target" data-magnetic="0.18">
+              <a class="btn btn-primary" href="https://github.com/lij768423-svg/grok-register-panel">
+                <span class="btn-label">打开 GitHub</span>
+              </a>
+            </span>
+            <span class="magnetic-target" data-magnetic="0.18">
+              <button class="btn btn-secondary" type="button" id="copy-clone">
+                <span class="btn-label">复制 clone</span>
+              </button>
+            </span>
           </div>
         </div>
         <div class="hero-visual">
@@ -309,5 +321,6 @@ python -m camoufox fetch</pre>
         })
         .catch(() => {});
     </script>
+    <script src="effects.js?v=3"></script>
   </body>
 </html>

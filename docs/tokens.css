@@ -31,6 +31,9 @@
   --color-cta-hover: oklch(24% 0.01 105);
   --color-focus: oklch(68% 0.17 35);
   --color-shadow: oklch(17.5% 0.008 105 / 0.12);
+  --accent: var(--color-accent);
+  --kinetic-trail-color: #e5b7af;
+  --kinetic-dot-color: rgba(21, 22, 19, 0.15);
 
   --space-3xs: 0.125rem;
   --space-2xs: 0.25rem;
@@ -80,6 +83,9 @@
   --color-cta-hover: oklch(92% 0.01 105);
   --color-focus: oklch(72% 0.17 35);
   --color-shadow: oklch(0% 0 0 / 0.45);
+  --accent: var(--color-accent);
+  --kinetic-trail-color: #f3b9ac;
+  --kinetic-dot-color: rgba(240, 241, 237, 0.13);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -100,6 +106,9 @@
     --color-cta-hover: oklch(92% 0.01 105);
     --color-focus: oklch(72% 0.17 35);
     --color-shadow: oklch(0% 0 0 / 0.45);
+    --accent: var(--color-accent);
+    --kinetic-trail-color: #f3b9ac;
+    --kinetic-dot-color: rgba(240, 241, 237, 0.13);
   }
 }
 
