@@ -28,7 +28,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 | 多邮箱后端 | **推荐 Outlook RT 库存**；也支持 DuckMail、MailNest、Cloudflare Worker 邮、YYDS、CloudMail、MoeMail、Inbucket 自建。域名邮箱不作为主路径 |
 | 反检测浏览器 | [Camoufox](https://camoufox.com/)（Gecko 层指纹） |
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口；**优先家宽** |
-| **降智测试** | 用配置的家宽让 CPA / Grok2API 账号实际流式回复：缺 thinking 或 Token/s 过高记降智，401/403 记风控 |
+| **降智测试** | `quality_probe_on_register` 打开后，入库才短测；缺 thinking 或 Token/s 过高记降智，401/403 记风控。面板可复测存量号 |
 | **BFS 检测** | 解码 access_token / SSO JWT，检查是否含 `bfs` claim；注册后自动标记，面板可批量扫描 CPA |
 | SSO 对照扫描 | grok.com `botFlagSource` / `policy=deny` **已不可靠**，不再作为风控门禁；旧面板仅保留对照 |
 | 编排器 | 多轮 batch、风控满 N 暂停、ASN 自动扩黑；规则写入 JSON 状态，不修改源码 |
@@ -162,6 +162,7 @@ Windows 不要把 `PLAYWRIGHT_NODEJS_PATH` 指到 `scripts/playwright-node`（�
 | `cpa_auto_add` | 是否 SSO→OAuth 并写入 auth |
 | `cpa_auth_dir` | 本地 CPA 目录（`xai-*.json`） |
 | `grok2api_auth_dir` | Grok2API 风格 auth 目录 |
+| `quality_probe_on_register` | 默认 `false`；打开后写入 auth 才短测降智。补录 CLI 用 `--quality-probe` |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
 ### 环境变量
@@ -224,7 +225,7 @@ python webui/monitor.py
 3. 设模式 / workers / batch 数量 / 再跑 N / 风控满 N → **启动**
 4. 需要多出口时打开顶部 **代理池**，导入代理并等待检测完成
 5. 打开顶部 **邮箱服务**，优先选 **Outlook RT**，填写库存路径后保存并测试。不要把域名邮箱当主路径
-6. 需要检测存量账号是否降智 / 无法对话时，打开顶部 **降智测试**，走家宽批量实聊
+6. 需要入库时短测降智：打开 `quality_probe_on_register`。存量号用顶部 **降智测试** 批量复测
 
 ### 静态资源缓存与批次流量
 
@@ -382,7 +383,7 @@ python sso_to_auth_json.py \
 
 ### 降智测试（家宽实聊）
 
-SSO 读 grok.com `botFlagSource` **已经不能判断风控**。改用 CPA / Grok2API 的 access_token，经配置的家宽出口让账号**实际流式回复**，再按 thinking 与 Token/s 分类。
+SSO 读 grok.com `botFlagSource` **已经不能判断风控**。改用 CPA / Grok2API 的 access_token，经配置的家宽出口发**短题流式回复**（见到 thinking 即停），再按 thinking 与 Token/s 分类。`quality_probe_on_register` 默认关闭：打开后 SSO→OAuth 写盘才会立刻测。
 
 | 判定 | 含义 |
 |------|------|
@@ -393,7 +394,8 @@ SSO 读 grok.com `botFlagSource` **已经不能判断风控**。改用 CPA / Gro
 
 | 能力 | 说明 |
 |------|------|
-| 面板 | 顶部「降智测试」：扫描 `cpa_auth` / `grok2api_auth`，默认走家宽池 |
+| 注册时 | 开关打开后写入 auth 才短测，`quality_verdict` 写进 json |
+| 面板 | 顶部「降智测试」：复测存量 `cpa_auth` / `grok2api_auth`，默认走家宽池 |
 | 导出 | 脱敏 JSONL，不含 token：`log/quality_degraded.jsonl`、`log/quality_risk.jsonl` |
 | CLI | `python scripts/check_quality.py --dir cpa_auth --from-config config.json` |
 
@@ -441,7 +443,7 @@ python scripts/check_bfs.py --token 'eyJ...'
 
 1. 邮箱：优先 Outlook 等真实邮箱；**不要用域名邮箱当主路径**  
 2. 出口：优先家宽；质量与冷却窗口影响大，同一出口短时间打太满容易抬失败率和降智  
-3. 风控 / 降智：不要再用 SSO botFlag；用面板「降智测试」走家宽实聊  
+3. 风控 / 降智：不要再用 SSO botFlag；要入库短测就打开 `quality_probe_on_register`，存量用面板「降智测试」
 4. JWT `bfs`：与页面 botFlag 分开统计；入库前可用面板/CLI 批量扫 CPA  
 5. 并发建议从 2～3 起跳，过高易空页、Turnstile 卡住、代理打满  
 6. 「资料填写失败」有时是资料页人机未过，不一定是姓名密码写不进  
@@ -455,7 +457,7 @@ python scripts/check_bfs.py --token 'eyJ...'
 ├── register_flow.py           # 注册页流程 / Turnstile
 ├── browser_session.py         # 会话、出口探测、ASN 黑名单
 ├── sso_to_auth_json.py        # SSO → OAuth / 写 CPA（auth 文件 0600）
-├── quality_probe.py           # 家宽实聊降智 / 风控探测
+├── quality_probe.py           # 短题降智 / 风控探测（开关打开才入库测、面板复测）
 ├── camoufox_adapter.py
 ├── connectivity.py
 ├── batch_supervisor.py        # 批处理监督、卡死恢复与原子进度
@@ -558,6 +560,7 @@ A: 在控制台使用“账号补录”。待处理模式成功后自动出队�
 
 | 提交方向 | 内容 |
 |----------|------|
+| 0.5.0 降智测试 | 短题（时钟夹角）+ 见到 thinking 掐流；`quality_probe_on_register` 默认关 |
 | 面板鉴权 | `MONITOR_TOKEN` + Bearer；UI 内 Token 输入；CORS 不开放 `*` |
 | 绑定安全 | 失败不回退 `0.0.0.0`；默认 `PANEL_INCLUDE_TAIL=0` |
 | 脱敏 | `webui/security_utils.py`；JSONL / 日志去凭据 |

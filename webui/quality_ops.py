@@ -16,7 +16,9 @@ if str(ROOT) not in sys.path:
 
 from quality_probe import (
     DEFAULT_WORKERS,
+    EARLY_STOP_MS,
     HARD_TPS,
+    MAX_OUTPUT_TOKENS,
     MIN_GENERATION_MS,
     MIN_OUTPUT_TOKENS,
     SOFT_TPS,
@@ -304,6 +306,8 @@ def quality_status() -> dict:
         "hard_tps": HARD_TPS,
         "min_output_tokens": MIN_OUTPUT_TOKENS,
         "min_generation_ms": MIN_GENERATION_MS,
+        "max_output_tokens": MAX_OUTPUT_TOKENS,
+        "early_stop_ms": EARLY_STOP_MS,
         "require_thinking": True,
     }
     return snapshot
@@ -387,18 +391,14 @@ def start_quality_scan(
     except (TypeError, ValueError):
         return {"ok": False, "error": "invalid workers"}
     try:
-        cap = max(0, min(MAX_RECORDS, int(limit or 0)))
+        requested = int(limit or 0)
     except (TypeError, ValueError):
         return {"ok": False, "error": "invalid limit"}
+    cap = MAX_RECORDS if requested <= 0 else max(1, min(MAX_RECORDS, requested))
 
     records = load_auth_records(_resolve_auth_dirs(normalized), limit=cap)
     if not records:
         return {"ok": False, "error": "没有可用的 CPA / Grok2API auth"}
-    if len(records) > MAX_RECORDS:
-        return {
-            "ok": False,
-            "error": f"一次最多检查 {MAX_RECORDS} 条，当前 {len(records)}",
-        }
 
     proxies = resolve_probe_proxies(proxy, prefer_home=bool(prefer_home))
     proxy_mode = "explicit" if str(proxy or "").strip() else ("home" if prefer_home else "pool")

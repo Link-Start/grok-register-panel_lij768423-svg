@@ -2155,7 +2155,7 @@ HTML = r"""<!DOCTYPE html>
           </details>
           <details class="faq-item" data-faq-item data-search="降智测试 quality probe 家宽 thinking tps 实聊 账号 批量">
             <summary>如何批量测试账号是否降智</summary>
-            <div class="faq-answer">打开顶部“降智测试”，选择 CPA / Grok2API auth 目录，用配置好的家宽出口让每个账号实际流式回复。缺少 thinking、Token/s 过高记为降智；401/403 / permission-denied 记为风控。命令行：<code>python scripts/check_quality.py --dir cpa_auth --from-config config.json</code>。脱敏结果写到 <code>log/quality_degraded.jsonl</code> 和 <code>log/quality_risk.jsonl</code>。</div>
+            <div class="faq-answer">入库短测默认关，打开 <code>quality_probe_on_register</code> 后才会在写入 CPA / Grok2API 时短测（短题，见到 thinking 即停）。存量号仍可打开顶部“降智测试”批量复测。缺少 thinking、Token/s 过高记为降智；401/403 / permission-denied 记为风控。命令行：<code>python scripts/check_quality.py --dir cpa_auth --from-config config.json</code>。脱敏结果写到 <code>log/quality_degraded.jsonl</code> 和 <code>log/quality_risk.jsonl</code>。</div>
           </details>
           <details class="faq-item" data-faq-item data-search="卡住 浏览器 启动失败 turnstile 资料页 空页 并发 camoufox">
             <summary>注册卡在验证码、资料页或浏览器启动</summary>
@@ -2449,11 +2449,11 @@ HTML = r"""<!DOCTYPE html>
         <div>
           <div class="mail-source-kicker">Chat quality</div>
           <div class="page-title" id="quality-view-title">降智测试</div>
-          <p class="sso-view-subtitle">用配置的家宽让账号实际流式回复，检测降智和无法对话</p>
+          <p class="sso-view-subtitle">入库短测默认关。这里复测存量 auth：短题 + 见到 thinking 即停</p>
         </div>
         <span class="sso-job mono" id="quality-heading-status">尚未扫描</span>
       </div>
-      <p class="recommend-banner">走家宽出口实聊。缺少 thinking 或 Token/s 过高记为降智；401/403 / permission-denied 记为风控。SSO botFlag 已不可用。</p>
+      <p class="recommend-banner">走家宽短测。缺少 thinking 或 Token/s 过高记为降智；401/403 / permission-denied 记为风控。SSO botFlag 已不可用。</p>
 
       <div class="sso-summary" id="quality-summary" aria-label="降智测试结果">
         <div class="sso-summary-item"><div class="sso-summary-label">总数</div><div class="sso-summary-value" id="quality-kpi-total">--</div></div>
@@ -2485,11 +2485,11 @@ HTML = r"""<!DOCTYPE html>
               <input id="quality-proxy" type="text" autocomplete="off" placeholder="空则使用家宽 / 代理池"/>
             </div>
             <div class="field">
-              <label for="quality-limit">最多条数（0=不限）</label>
-              <input type="number" id="quality-limit" min="0" max="2000" value="0"/>
+              <label for="quality-limit">最多条数（0=最近 2000）</label>
+              <input type="number" id="quality-limit" min="0" max="2000" value="200"/>
             </div>
           </div>
-          <p class="sso-format" id="quality-source-hint">扫描 cpa_auth。请求走家宽，让账号真正生成一段回复后再判定。</p>
+          <p class="sso-format" id="quality-source-hint">扫描 cpa_auth，默认测最近 200 条。点「开始测试」后看本页提示和进度，不要填 0 指望一次扫完全库。</p>
         </div>
         <div class="button-group">
           <button class="primary" id="quality-start" onclick="startQualityScan()">开始测试</button>
@@ -2565,7 +2565,7 @@ HTML = r"""<!DOCTYPE html>
       <span class="section-meta mono" id="quality-dash-status">家宽实聊</span>
     </div>
     <p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.5">
-      用家宽让 CPA / Grok2API 账号实际回复，按 thinking 和 Token/s 判断降智；401/403 记为风控。SSO botFlag 已不可用。
+      入库短测默认关，打开开关才测。面板用于复测存量号：短题、见到 thinking 即停；401/403 记为风控。
     </p>
     <div class="chips" id="quality-dash-kpis"></div>
     <div class="button-group" style="margin-top:10px">
@@ -3794,7 +3794,7 @@ async function startQualityScan() {
       workers: Number((document.getElementById("quality-workers") || {}).value || 2),
       delay: Number((document.getElementById("quality-delay") || {}).value || 0.2),
       proxy: (document.getElementById("quality-proxy") || {}).value || "",
-      limit: Number((document.getElementById("quality-limit") || {}).value || 0),
+      limit: Number((document.getElementById("quality-limit") || {}).value || 200),
       prefer_home: true,
     };
     const data = await api("/api/quality/start", { method: "POST", body: JSON.stringify(payload) });

@@ -10,6 +10,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from quality_probe import (
+    DEFAULT_PROMPT,
+    apply_quality_fields,
     classify_failure_kind,
     classify_sample,
     load_auth_records,
@@ -17,6 +19,7 @@ from quality_probe import (
     probe_account,
     public_row,
     run_quality_scan,
+    stamp_quality_on_record,
 )
 from webui import quality_ops
 
@@ -42,12 +45,21 @@ def sse(*payloads: dict, done: bool = True) -> list[str]:
     return lines
 
 
+def test_default_prompt_is_short_but_not_trivial_arithmetic():
+    text = DEFAULT_PROMPT.lower()
+    assert "quality_ok" in text
+    assert "17*23" not in text
+    assert "clock" in text or "angle" in text
+    assert len(DEFAULT_PROMPT) < 400
+
+
 def test_classify_sample_thinking_and_tps():
     assert classify_sample(10, 80, True, 4000) == "healthy"
     assert classify_sample(250, 80, True, 4000) == "soft"
     assert classify_sample(1200, 80, True, 4000) == "hard"
     assert classify_sample(10, 80, False, 4000) == "hard"
-    assert classify_sample(10, 8, True, 4000) == "ignored"
+    assert classify_sample(10, 7, True, 4000) == "ignored"
+    assert classify_sample(10, 8, True, 4000) == "healthy"
     assert classify_sample(400, 80, True, 200) == "burst"
     assert classify_sample(10, 80, False, 4000, require_thinking=False) == "healthy"
 
@@ -99,10 +111,16 @@ def test_probe_account_healthy_and_risk(monkeypatch_clock=None):
             ),
         )
 
-    healthy = probe_account(record, post_fn=healthy_post, monotonic=fake_clock)
+    healthy = probe_account(
+        record,
+        post_fn=healthy_post,
+        monotonic=fake_clock,
+        early_stop_on_thinking=False,
+    )
     assert healthy["verdict"] == "healthy"
     assert healthy["has_thinking"] is True
     assert healthy["output_tokens"] == 80
+    assert healthy["early_stop"] is False
 
     def denied_post(_url, **_kwargs):
         return FakeResp(403, text='{"error":"permission-denied"}')
@@ -110,6 +128,68 @@ def test_probe_account_healthy_and_risk(monkeypatch_clock=None):
     denied = probe_account(record, post_fn=denied_post, monotonic=lambda: 1.0)
     assert denied["verdict"] == "risk"
     assert denied["error_kind"] == "account_error"
+
+
+def test_probe_account_early_stops_after_thinking():
+    lines = sse(
+        {"choices": [{"delta": {"thinking_content": "plan"}}]},
+        {"choices": [{"delta": {"content": "A" * 80}}]},
+        {"choices": [{"delta": {"content": "B" * 80}}]},
+        {"usage": {"completion_tokens": 80, "reasoning_tokens": 16}},
+    )
+    resp = FakeResp(200, lines)
+    original_iter = resp.iter_lines
+
+    def counting_iter():
+        for line in original_iter():
+            resp.reads = getattr(resp, "reads", 0) + 1
+            yield line
+
+    resp.iter_lines = counting_iter
+    record = {"email": "early@example.test", "access_token": "tok"}
+
+    probed = probe_account(
+        record,
+        post_fn=lambda *_a, **_k: resp,
+        monotonic=lambda: 1.0,
+        early_stop_on_thinking=True,
+        early_stop_ms=0,
+    )
+    assert probed["verdict"] == "healthy"
+    assert probed["has_thinking"] is True
+    assert probed["early_stop"] is True
+    assert getattr(resp, "reads", 0) == 1
+
+
+def test_stamp_quality_on_record_writes_meta_not_token():
+    record = {
+        "email": "meta@example.test",
+        "access_token": "secret-token",
+        "base_url": "https://cli-chat-proxy.grok.com/v1",
+    }
+
+    def post(_url, **_kwargs):
+        return FakeResp(
+            200,
+            sse(
+                {"choices": [{"delta": {"thinking_content": "step"}}]},
+                {"choices": [{"delta": {"content": "391"}}]},
+            ),
+        )
+
+    probed = stamp_quality_on_record(
+        record,
+        post_fn=post,
+        monotonic=lambda: 1.0,
+        early_stop_on_thinking=True,
+        early_stop_ms=0,
+    )
+    assert probed["verdict"] == "healthy"
+    assert record["quality_verdict"] == "healthy"
+    assert record["quality_has_thinking"] is True
+    assert record["quality_early_stop"] is True
+    assert "secret-token" not in json.dumps(apply_quality_fields({}, probed))
+    assert record["access_token"] == "secret-token"
 
 
 def test_run_quality_scan_exports_redacted_jsonl():
@@ -238,10 +318,13 @@ def test_load_auth_records_and_quality_ops_status(tmp_path, monkeypatch=None):
 
 
 if __name__ == "__main__":
+    test_default_prompt_is_short_but_not_trivial_arithmetic()
     test_classify_sample_thinking_and_tps()
     test_classify_failure_kind_account_vs_transport()
     test_parse_sse_quality_detects_thinking()
     test_probe_account_healthy_and_risk()
+    test_probe_account_early_stops_after_thinking()
+    test_stamp_quality_on_record_writes_meta_not_token()
     test_run_quality_scan_exports_redacted_jsonl()
     with tempfile.TemporaryDirectory() as temp:
         test_load_auth_records_and_quality_ops_status(Path(temp))

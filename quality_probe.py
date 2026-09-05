@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
-"""Batch chat quality probe: 降智 / 风控 via real model replies.
+"""Batch chat quality probe: 降智 / 风控 via short streamed replies.
 
 SSO grok.com botFlag is no longer a reliable risk signal. This module asks each
-CPA (or Grok2API) account to generate a real streamed reply through a configured
-residential (家宽) proxy, then classifies:
+CPA (or Grok2API) account to generate a short streamed reply through a configured
+residential (家宽) proxy, stopping soon after thinking appears, then classifies:
 
   - risk     : HTTP 401/403 / permission-denied (account cannot chat)
   - hard     : missing thinking, or Token/s >= hard_tps
@@ -28,8 +28,10 @@ from sso_to_auth_json import CPA_GROK_BASE_URL, CPA_GROK_HEADERS, CPA_PROBE_MODE
 from webui.security_utils import mask_email, redact_log_line, redact_proxy
 
 DEFAULT_PROMPT = (
-    "Write a detailed technical explanation of how TCP slow start works, "
-    "at least 12 sentences, plain text only."
+    "Think step by step. A clock shows 3:27. "
+    "What is the smaller angle in degrees between the hour and minute hands, "
+    "rounded to the nearest integer? "
+    "Reply with only that integer on the first line and QUALITY_OK on the last line."
 )
 CHAT_PATH = "/chat/completions"
 THINKING_KEYS = (
@@ -57,12 +59,25 @@ ACCOUNT_ERROR_MARKERS = (
 )
 SOFT_TPS = 200.0
 HARD_TPS = 1000.0
-MIN_OUTPUT_TOKENS = 32
+MIN_OUTPUT_TOKENS = 8
 MIN_GENERATION_MS = 1000
-MAX_OUTPUT_TOKENS = 256
-DEFAULT_TIMEOUT = 90
+MAX_OUTPUT_TOKENS = 48
+DEFAULT_TIMEOUT = 25
 DEFAULT_WORKERS = 2
 MAX_CONTENT_CHARS = 400
+EARLY_STOP_ON_THINKING = True
+EARLY_STOP_MS = 800
+QUALITY_META_KEYS = (
+    "quality_verdict",
+    "quality_at",
+    "quality_tps",
+    "quality_has_thinking",
+    "quality_status_code",
+    "quality_error",
+    "quality_model",
+    "quality_early_stop",
+    "quality_output_tokens",
+)
 
 
 def classify_failure_kind(status: int, body: str) -> str:
@@ -244,6 +259,8 @@ def probe_account(
     min_output_tokens: int = MIN_OUTPUT_TOKENS,
     min_generation_ms: int = MIN_GENERATION_MS,
     require_thinking: bool = True,
+    early_stop_on_thinking: bool = EARLY_STOP_ON_THINKING,
+    early_stop_ms: int = EARLY_STOP_MS,
     post_fn: Callable | None = None,
     monotonic: Callable[[], float] | None = None,
 ) -> dict:
@@ -267,6 +284,7 @@ def probe_account(
         "preview": "",
         "proxy": proxy,
         "model": model,
+        "early_stop": False,
     }
     if not access:
         result["error"] = "missing access_token"
@@ -316,14 +334,40 @@ def probe_account(
             return result
 
         parsed_lines = []
+        parsed = {
+            "has_thinking": False,
+            "content_chars": 0,
+            "usage_out": 0,
+            "usage_reason": 0,
+            "first_token": False,
+            "preview": "",
+        }
         iterator = resp.iter_lines() if hasattr(resp, "iter_lines") else []
-        for line in iterator:
-            if first_token_at <= 0:
+        try:
+            for line in iterator:
                 raw = line.decode("utf-8", "replace") if isinstance(line, (bytes, bytearray)) else str(line or "")
-                if '"content"' in raw or any(key in raw for key in THINKING_KEYS):
-                    first_token_at = clock()
-            parsed_lines.append(line)
-        parsed = parse_sse_quality(parsed_lines)
+                parsed_lines.append(line)
+                if first_token_at <= 0:
+                    if '"content"' in raw or any(key in raw for key in THINKING_KEYS):
+                        first_token_at = clock()
+                parsed = parse_sse_quality(parsed_lines)
+                if (
+                    early_stop_on_thinking
+                    and parsed.get("has_thinking")
+                    and first_token_at
+                    and (clock() - first_token_at) * 1000 >= max(0, int(early_stop_ms or 0))
+                ):
+                    result["early_stop"] = True
+                    break
+        except Exception as exc:
+            if not parsed_lines:
+                result["duration_ms"] = int((clock() - start) * 1000)
+                result["error"] = redact_log_line(str(exc))[:240]
+                result["error_kind"] = "transport_error"
+                result["verdict"] = "error"
+                return result
+            result["error"] = redact_log_line(str(exc))[:240]
+            result["error_kind"] = "transport_error"
     finally:
         closer = getattr(resp, "close", None)
         if callable(closer):
@@ -369,6 +413,8 @@ def probe_account(
         min_generation_ms=min_generation_ms,
         require_thinking=require_thinking,
     )
+    if result.get("early_stop") and has_thinking and verdict in {"unknown", "ignored"}:
+        verdict = "healthy"
     error = ""
     if verdict == "hard" and require_thinking and not has_thinking:
         error = "响应缺少 thinking_content（降智）"
@@ -391,13 +437,62 @@ def probe_account(
     return result
 
 
+def apply_quality_fields(record: dict, probed: dict) -> dict:
+    """Stamp redacted quality verdict onto a CPA / Grok2API auth record."""
+    if not isinstance(record, dict):
+        return record
+    record["quality_verdict"] = str(probed.get("verdict") or "")
+    record["quality_at"] = time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())
+    try:
+        record["quality_tps"] = float(probed.get("tps") or 0)
+    except (TypeError, ValueError):
+        record["quality_tps"] = 0.0
+    record["quality_has_thinking"] = bool(probed.get("has_thinking"))
+    try:
+        record["quality_status_code"] = int(probed.get("status_code") or 0)
+    except (TypeError, ValueError):
+        record["quality_status_code"] = 0
+    record["quality_error"] = redact_log_line(str(probed.get("error") or ""))[:240]
+    record["quality_model"] = str(probed.get("model") or "")
+    record["quality_early_stop"] = bool(probed.get("early_stop"))
+    try:
+        record["quality_output_tokens"] = int(probed.get("output_tokens") or 0)
+    except (TypeError, ValueError):
+        record["quality_output_tokens"] = 0
+    return record
+
+
+def quality_extra_fields(record: dict | None) -> dict:
+    if not isinstance(record, dict):
+        return {}
+    return {key: record[key] for key in QUALITY_META_KEYS if key in record}
+
+
+def stamp_quality_on_record(
+    record: dict,
+    proxy: str = "",
+    **kwargs,
+) -> dict:
+    """Probe one account and write quality_* fields back onto the record."""
+    probed = probe_account(record, proxy=proxy, **kwargs)
+    apply_quality_fields(record, probed)
+    return probed
+
+
 def load_auth_records(dirs: list[Path], *, limit: int = 0) -> list[dict]:
     records: list[dict] = []
     seen: set[str] = set()
     for folder in dirs:
         if not folder or not folder.is_dir():
             continue
-        paths = sorted(folder.glob("*.json"))
+        try:
+            paths = sorted(
+                folder.glob("*.json"),
+                key=lambda item: item.stat().st_mtime,
+                reverse=True,
+            )
+        except OSError:
+            paths = sorted(folder.glob("*.json"))
         for path in paths:
             try:
                 data = json.loads(path.read_text(encoding="utf-8") or "{}")
@@ -473,6 +568,8 @@ def run_quality_scan(
     min_output_tokens: int = MIN_OUTPUT_TOKENS,
     min_generation_ms: int = MIN_GENERATION_MS,
     require_thinking: bool = True,
+    early_stop_on_thinking: bool = EARLY_STOP_ON_THINKING,
+    early_stop_ms: int = EARLY_STOP_MS,
     export: str | Path | None = None,
     risk_export: str | Path | None = None,
     log=print,
@@ -537,6 +634,8 @@ def run_quality_scan(
             min_output_tokens=min_output_tokens,
             min_generation_ms=min_generation_ms,
             require_thinking=require_thinking,
+            early_stop_on_thinking=early_stop_on_thinking,
+            early_stop_ms=early_stop_ms,
             post_fn=post_fn,
             monotonic=monotonic,
         )

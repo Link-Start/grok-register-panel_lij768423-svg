@@ -228,6 +228,8 @@ DEFAULT_CONFIG = {
     "cpa_management_key": "",
     # Grok2API / ~/.grok 风格 auth 目录（默认项目根目录下 grok2api_auth/）
     "grok2api_auth_dir": "grok2api_auth",
+    # 写入 CPA / Grok2API 后立刻短测降智（短 prompt，见到 thinking 即停）
+    "quality_probe_on_register": False,
     "mailnest_api_key": "",
     "mailnest_project_code": "x-ai001",
     # YYDS：留空自动选已验证域名；填写则固定该域名
@@ -1245,7 +1247,29 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
         if disable_bfs and record.get("bfs") is True:
             record["disabled"] = True
             _cpa_log("bfs 账号已标记 disabled=true")
+        quality_on = config.get("quality_probe_on_register", False)
+        if isinstance(quality_on, str):
+            quality_on = quality_on.strip().lower() not in ("0", "false", "no", "off")
+        if quality_on:
+            probed = _s2cpa.stamp_converted_record_quality(
+                record, proxy=proxy, log=_cpa_log
+            )
+            verdict = str((probed or {}).get("verdict") or "")
+            if verdict in {"soft", "hard", "burst", "risk"}:
+                try:
+                    record_register_result(
+                        "risk" if verdict == "risk" else "ok",
+                        email or "",
+                        kind="quality_" + verdict,
+                        detail=str((probed or {}).get("error") or verdict)[:180],
+                        log_callback=log_callback,
+                    )
+                except Exception:
+                    pass
         wrote_ok = False
+        quality_extra = {
+            key: record[key] for key in record if str(key).startswith("quality_")
+        }
         if auth_dir:
             try:
                 path = _s2cpa.write_cpa_auth(_s2cpa.Path(auth_dir), record)
@@ -1262,7 +1286,12 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
                 _cpa_log(f"CPA 远程上传失败: {remote_exc}")
         if g2a_dir:
             try:
-                gpath = _s2cpa.write_grok2api_auth(_s2cpa.Path(g2a_dir), token, email=email)
+                gpath = _s2cpa.write_grok2api_auth(
+                    _s2cpa.Path(g2a_dir),
+                    token,
+                    email=email,
+                    extra=quality_extra,
+                )
                 _cpa_log(f"已写入 Grok2API {gpath}")
                 wrote_ok = True
             except Exception as g2a_exc:
@@ -3124,6 +3153,17 @@ class GrokRegisterGUI:
         ).grid(row=0, column=0, columnspan=4, sticky=tk.W, pady=3)
 
         self._cpa_detail_widgets = []
+        quality_on = config.get("quality_probe_on_register", False)
+        if isinstance(quality_on, str):
+            quality_on = quality_on.strip().lower() not in ("0", "false", "no", "off")
+        self.quality_probe_on_register_var = tk.BooleanVar(value=bool(quality_on))
+        quality_check = tk_checkbutton(
+            self.cpa_frame,
+            text="写入 auth 后短测降智（默认关；勾选才测，短题，见到 thinking 即停）",
+            variable=self.quality_probe_on_register_var,
+        )
+        quality_check.grid(row=1, column=0, columnspan=4, sticky=tk.W, pady=3)
+        self._cpa_detail_widgets.append(quality_check)
         def c_label(row, col, text):
             w = tk_label(self.cpa_frame, text=text, bg=UI_PANEL_BG)
             w.grid(row=row, column=col, sticky=tk.W, padx=(0, 6), pady=3)
@@ -3143,28 +3183,28 @@ class GrokRegisterGUI:
             "auth_code": "Authorization Code",
         }.get(_cur_mode, "协议 Device Flow")
         self.cpa_token_mode_var = tk.StringVar(value=_mode_display)
-        c_label(1, 0, "Token 换取:")
+        c_label(2, 0, "Token 换取:")
         token_mode_menu = tk_option_menu(
             self.cpa_frame,
             self.cpa_token_mode_var,
             ["协议 Device Flow", "浏览器 Device Flow", "Authorization Code"],
             width=20,
         )
-        c_field(token_mode_menu, 1, 1)
-        c_label(1, 2, "（默认协议换 token；浏览器模式需活动浏览器）")
+        c_field(token_mode_menu, 2, 1)
+        c_label(2, 2, "（默认协议换 token；浏览器模式需活动浏览器）")
 
         self.cpa_auth_dir_var = tk.StringVar(value=str(config.get("cpa_auth_dir", "")))
         self.cpa_remote_url_var = tk.StringVar(value=str(config.get("cpa_remote_url", "")))
         self.cpa_management_key_var = tk.StringVar(value=str(config.get("cpa_management_key", "")))
         self.grok2api_auth_dir_var = tk.StringVar(value=str(config.get("grok2api_auth_dir", "")))
-        c_label(2, 0, "CPA auth 目录:")
-        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_auth_dir_var, width=52), 2, 1, columnspan=3)
-        c_label(3, 0, "远程地址:")
-        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_remote_url_var, width=34), 3, 1)
-        c_label(3, 2, "管理密钥:")
-        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_management_key_var, width=28), 3, 3)
-        c_label(4, 0, "Grok2API 目录:")
-        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_auth_dir_var, width=52), 4, 1, columnspan=3)
+        c_label(3, 0, "CPA auth 目录:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_auth_dir_var, width=52), 3, 1, columnspan=3)
+        c_label(4, 0, "远程地址:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_remote_url_var, width=34), 4, 1)
+        c_label(4, 2, "管理密钥:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_management_key_var, width=28), 4, 3)
+        c_label(5, 0, "Grok2API 目录:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_auth_dir_var, width=52), 5, 1, columnspan=3)
 
         self.email_provider_var.trace_add("write", lambda *_: self._refresh_provider_fields())
         self.cpa_auto_add_var.trace_add("write", lambda *_: self._refresh_cpa_fields())
@@ -3350,6 +3390,7 @@ class GrokRegisterGUI:
                 or outlook_rt_provider.DEFAULT_CLIENT_ID
             )
             config["cpa_auto_add"] = bool(self.cpa_auto_add_var.get())
+            config["quality_probe_on_register"] = bool(self.quality_probe_on_register_var.get())
             _mode_text = str(self.cpa_token_mode_var.get()).strip()
             if "协议" in _mode_text:
                 config["cpa_token_mode"] = "device_protocol"
@@ -3472,6 +3513,7 @@ class GrokRegisterGUI:
             or outlook_rt_provider.DEFAULT_CLIENT_ID
         )
         config["cpa_auto_add"] = bool(self.cpa_auto_add_var.get())
+        config["quality_probe_on_register"] = bool(self.quality_probe_on_register_var.get())
         _mode_text = str(self.cpa_token_mode_var.get()).strip()
         if "协议" in _mode_text:
             config["cpa_token_mode"] = "device_protocol"
@@ -3593,7 +3635,14 @@ class GrokRegisterGUI:
             self.log(f"[*] 并发已自动调整为 {workers}（不超过注册数量）")
         _mode_map = {"device_protocol": "协议 Device Flow", "device_browser": "浏览器 Device Flow", "auth_code": "Authorization Code"}
         _mode_label = _mode_map.get(str(config.get("cpa_token_mode", "device_protocol")), "协议 Device Flow")
-        self.log(f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（仅保存 SSO）'}" + (f"（{_mode_label}）" if config.get('cpa_auto_add') else ""))
+        _quality_on = config.get("quality_probe_on_register", False)
+        if isinstance(_quality_on, str):
+            _quality_on = _quality_on.strip().lower() not in ("0", "false", "no", "off")
+        self.log(
+            f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（仅保存 SSO）'}"
+            + (f"（{_mode_label}）" if config.get("cpa_auto_add") else "")
+            + (" | 入库后短测降智" if config.get("cpa_auto_add") and _quality_on else "")
+        )
         threading.Thread(
             target=self._run_registration_entry,
             args=(count, workers),
@@ -3918,7 +3967,14 @@ def run_registration_cli(count):
         cli_log(f"[*] 账号间注册间隔: {_cli_interval_raw}s")
     _cli_mode_map = {"device_protocol": "协议 Device Flow", "device_browser": "浏览器 Device Flow", "auth_code": "Authorization Code"}
     _cli_mode_label = _cli_mode_map.get(str(config.get("cpa_token_mode", "device_protocol")), "协议 Device Flow")
-    cli_log(f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（仅保存 SSO）'}" + (f"（{_cli_mode_label}）" if config.get('cpa_auto_add') else ""))
+    _cli_quality_on = config.get("quality_probe_on_register", False)
+    if isinstance(_cli_quality_on, str):
+        _cli_quality_on = _cli_quality_on.strip().lower() not in ("0", "false", "no", "off")
+    cli_log(
+        f"[*] SSO→auth: {'开' if config.get('cpa_auto_add') else '关（仅保存 SSO）'}"
+        + (f"（{_cli_mode_label}）" if config.get("cpa_auto_add") else "")
+        + (" | 入库后短测降智" if config.get("cpa_auto_add") and _cli_quality_on else "")
+    )
     # 启动前清理上次崩溃 / 强杀残留的临时 profile 目录
     try:
         _cleanup_stale_profiles(log_callback=cli_log)

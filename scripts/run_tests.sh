@@ -17,6 +17,7 @@ tests=(
   tests/test_sso_state.py
   tests/test_registration_risk_gate.py
   tests/test_quality_probe.py
+  tests/test_quality_register.py
   tests/test_bfs_detect.py
   tests/test_bfs_ops.py
   tests/test_bfs_worker_integration.py

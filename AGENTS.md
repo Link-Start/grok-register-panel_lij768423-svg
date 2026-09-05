@@ -30,9 +30,11 @@ bulk abuse.
 - `webui/sso_state_ops.py` owns the deprecated SSO botFlag / policy scan job.
   Reports must not include raw SSO tokens; clean exports stay in
   `log/sso_clean.txt`. Do not use this scan as a live risk gate.
-- `quality_probe.py` and `webui/quality_ops.py` own the 降智测试: real streamed
-  chat replies over 家宽/proxy pool. Panel exports must not include access
-  tokens. Prefer home proxies from `proxy_store.worker_proxy_details()`.
+- `quality_probe.py` and `webui/quality_ops.py` own the 降智测试: short streamed
+  chat replies over 家宽/proxy pool (early-stop after thinking). Registration
+  stamps `quality_*` onto CPA/Grok2API auth only when `quality_probe_on_register`
+  is on (default off). Panel exports must not include access tokens. Prefer home
+  proxies from `proxy_store.worker_proxy_details()`.
 - `webui/proxy_store.py` owns proxy import, normalization, health, cooldown, and
   redacted API views. `webui/email_provider_store.py` owns provider config and
   secret-preserving updates. `webui/email_domain_store.py` owns domain rotation
@@ -57,8 +59,9 @@ bulk abuse.
    explicit xAI domain rejection increments domain rejection state.
 5. Successful SSO can be converted to CPA/Grok2API auth. BFS detection is a JWT
    claim check separate from the deprecated grok.com `botFlagSource` page field.
-   Account chat quality / 风控 is judged by `quality_probe` (real replies), not
-   SSO homepage scraping.
+   Account chat quality / 风控 is judged by `quality_probe` (short real replies),
+   not SSO homepage scraping. New accounts are probed after OAuth write only when
+   `quality_probe_on_register` is enabled.
 6. The panel reads JSON/runtime state and controls only processes whose command
    line resolves to this project root.
 
