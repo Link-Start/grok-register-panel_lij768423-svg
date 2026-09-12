@@ -55,12 +55,12 @@ def test_default_prompt_is_short_but_not_trivial_arithmetic():
 
 def test_classify_sample_thinking_and_tps():
     assert classify_sample(10, 80, True, 4000) == "healthy"
-    assert classify_sample(250, 80, True, 4000) == "soft"
-    assert classify_sample(1200, 80, True, 4000) == "hard"
+    assert classify_sample(250, 80, True, 4000) == "healthy"
+    assert classify_sample(1200, 80, True, 4000) == "healthy"
     assert classify_sample(10, 80, False, 4000) == "hard"
-    assert classify_sample(10, 7, True, 4000) == "ignored"
+    assert classify_sample(10, 7, True, 4000) == "healthy"
     assert classify_sample(10, 8, True, 4000) == "healthy"
-    assert classify_sample(400, 80, True, 200) == "burst"
+    assert classify_sample(400, 80, True, 200) == "healthy"
     assert classify_sample(10, 80, False, 4000, require_thinking=False) == "healthy"
 
 

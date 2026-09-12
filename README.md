@@ -28,7 +28,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 | 多邮箱后端 | **推荐 Outlook RT 库存**；也支持 DuckMail、MailNest、Cloudflare Worker 邮、YYDS、CloudMail、MoeMail、Inbucket 自建。域名邮箱不作为主路径 |
 | 反检测浏览器 | [Camoufox](https://camoufox.com/)（Gecko 层指纹） |
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口；**优先家宽** |
-| **降智测试** | `quality_probe_on_register` 打开后，入库才短测；缺 thinking 或 Token/s 过高记降智，401/403 记风控。面板可复测存量号 |
+| **降智测试** | `quality_probe_on_register` 打开后，入库才短测；有 thinking 记正常，缺 thinking 记降智，401/403 记风控。面板可复测存量号 |
 | **BFS 检测** | 解码 access_token / SSO JWT，检查是否含 `bfs` claim；注册后自动标记，面板可批量扫描 CPA |
 | SSO 对照扫描 | grok.com `botFlagSource` / `policy=deny` **已不可靠**，不再作为风控门禁；旧面板仅保留对照 |
 | 编排器 | 多轮 batch、风控满 N 暂停、ASN 自动扩黑；规则写入 JSON 状态，不修改源码 |
@@ -383,12 +383,12 @@ python sso_to_auth_json.py \
 
 ### 降智测试（家宽实聊）
 
-SSO 读 grok.com `botFlagSource` **已经不能判断风控**。改用 CPA / Grok2API 的 access_token，经配置的家宽出口发**短题流式回复**（见到 thinking 即停），再按 thinking 与 Token/s 分类。`quality_probe_on_register` 默认关闭：打开后 SSO→OAuth 写盘才会立刻测。
+SSO 读 grok.com `botFlagSource` **已经不能判断风控**。改用 CPA / Grok2API 的 access_token，经配置的家宽出口发**短题流式回复**（见到 thinking 即停），**只按有没有 thinking 分类**。`quality_probe_on_register` 默认关闭：打开后 SSO→OAuth 写盘才会立刻测。
 
 | 判定 | 含义 |
 |------|------|
-| `healthy` | 有 thinking，Token/s 低于 soft（默认 200） |
-| `soft` / `hard` / `burst` | 降智：缺 thinking，或 Token/s 过高 / 短窗口虚高 |
+| `healthy` | 回复里有 thinking |
+| `hard` | 降智：有回复但缺 thinking |
 | `risk` | 401/403、permission-denied 等账号不可聊 |
 | `error` | 代理或传输失败 |
 

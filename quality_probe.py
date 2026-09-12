@@ -6,12 +6,9 @@ CPA (or Grok2API) account to generate a short streamed reply through a configure
 residential (家宽) proxy, stopping soon after thinking appears, then classifies:
 
   - risk     : HTTP 401/403 / permission-denied (account cannot chat)
-  - hard     : missing thinking, or Token/s >= hard_tps
-  - soft     : Token/s >= soft_tps
-  - burst    : short generation window with inflated Token/s
-  - healthy  : thinking present and Token/s below soft
+  - hard     : streamed a reply but no thinking (降智)
+  - healthy  : thinking present
   - error    : transport / proxy / parse failure
-  - ignored  : reply too short to judge
 """
 
 from __future__ import annotations
@@ -106,18 +103,13 @@ def classify_sample(
     min_generation_ms: int = MIN_GENERATION_MS,
     require_thinking: bool = True,
 ) -> str:
-    if output_tokens <= 0 or tps <= 0:
-        return "unknown"
-    if min_output_tokens > 0 and output_tokens < min_output_tokens:
-        return "ignored"
+    """Judge quality from thinking only. TPS / burst / short-window are ignored.
+
+    Extra numeric arguments stay for callers; they do not affect the verdict.
+    """
+    del tps, output_tokens, gen_ms, soft_tps, hard_tps, min_output_tokens, min_generation_ms
     if require_thinking and not has_thinking:
         return "hard"
-    if min_generation_ms > 0 and gen_ms < min_generation_ms and tps >= soft_tps:
-        return "burst"
-    if tps >= hard_tps:
-        return "hard"
-    if tps >= soft_tps:
-        return "soft"
     return "healthy"
 
 
@@ -413,13 +405,11 @@ def probe_account(
         min_generation_ms=min_generation_ms,
         require_thinking=require_thinking,
     )
-    if result.get("early_stop") and has_thinking and verdict in {"unknown", "ignored"}:
+    if result.get("early_stop") and has_thinking:
         verdict = "healthy"
     error = ""
     if verdict == "hard" and require_thinking and not has_thinking:
         error = "响应缺少 thinking_content（降智）"
-    elif verdict in {"hard", "soft", "burst"}:
-        error = f"Token/s={tps:.1f}（降智）"
     result.update(
         {
             "verdict": verdict,
@@ -697,6 +687,7 @@ def run_quality_scan(
         else:
             summary["unknown_count"] += 1
         if verdict in {"hard", "soft", "burst"}:
+            # New scans only emit hard for 降智; keep soft/burst for old reports.
             summary["degraded_count"] += 1
             if export_path:
                 append_private_text(

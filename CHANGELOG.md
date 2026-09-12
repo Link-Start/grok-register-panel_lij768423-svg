@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Changed
+
+- 降智测试只按有没有 thinking 判定：有 thinking 为正常，没有为降智。不再用 Token/s / `burst` / `soft` 分档。
+
 ## 0.5.0 - 2026-09-06
 
 ### Added

@@ -2155,7 +2155,7 @@ HTML = r"""<!DOCTYPE html>
           </details>
           <details class="faq-item" data-faq-item data-search="降智测试 quality probe 家宽 thinking tps 实聊 账号 批量">
             <summary>如何批量测试账号是否降智</summary>
-            <div class="faq-answer">入库短测默认关，打开 <code>quality_probe_on_register</code> 后才会在写入 CPA / Grok2API 时短测（短题，见到 thinking 即停）。存量号仍可打开顶部“降智测试”批量复测。缺少 thinking、Token/s 过高记为降智；401/403 / permission-denied 记为风控。命令行：<code>python scripts/check_quality.py --dir cpa_auth --from-config config.json</code>。脱敏结果写到 <code>log/quality_degraded.jsonl</code> 和 <code>log/quality_risk.jsonl</code>。</div>
+            <div class="faq-answer">入库短测默认关，打开 <code>quality_probe_on_register</code> 后才会在写入 CPA / Grok2API 时短测（短题，见到 thinking 即停）。存量号仍可打开顶部“降智测试”批量复测。有 thinking 记为正常；缺少 thinking 记为降智；401/403 / permission-denied 记为风控。命令行：<code>python scripts/check_quality.py --dir cpa_auth --from-config config.json</code>。脱敏结果写到 <code>log/quality_degraded.jsonl</code> 和 <code>log/quality_risk.jsonl</code>。</div>
           </details>
           <details class="faq-item" data-faq-item data-search="卡住 浏览器 启动失败 turnstile 资料页 空页 并发 camoufox">
             <summary>注册卡在验证码、资料页或浏览器启动</summary>
@@ -2453,7 +2453,7 @@ HTML = r"""<!DOCTYPE html>
         </div>
         <span class="sso-job mono" id="quality-heading-status">尚未扫描</span>
       </div>
-      <p class="recommend-banner">走家宽短测。缺少 thinking 或 Token/s 过高记为降智；401/403 / permission-denied 记为风控。SSO botFlag 已不可用。</p>
+      <p class="recommend-banner">走家宽短测。有 thinking 记为正常，缺少 thinking 记为降智；401/403 / permission-denied 记为风控。SSO botFlag 已不可用。</p>
 
       <div class="sso-summary" id="quality-summary" aria-label="降智测试结果">
         <div class="sso-summary-item"><div class="sso-summary-label">总数</div><div class="sso-summary-value" id="quality-kpi-total">--</div></div>
@@ -2565,7 +2565,7 @@ HTML = r"""<!DOCTYPE html>
       <span class="section-meta mono" id="quality-dash-status">家宽实聊</span>
     </div>
     <p style="margin:0 0 10px;color:var(--muted);font-size:13px;line-height:1.5">
-      入库短测默认关，打开开关才测。面板用于复测存量号：短题、见到 thinking 即停；401/403 记为风控。
+      入库短测默认关，打开开关才测。面板用于复测存量号：短题、见到 thinking 即停；有 thinking 为正常，没有为降智；401/403 记为风控。
     </p>
     <div class="chips" id="quality-dash-kpis"></div>
     <div class="button-group" style="margin-top:10px">
